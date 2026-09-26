@@ -287,7 +287,7 @@ from graph_evt_agent.agents import EVTAgentTeam, MistralClient
 source = load_timeseries("episode.csv")  # либо "record.edf"
 team = EVTAgentTeam(
     pipeline=GraphEVTPipeline(EVTConfig(baseline_size=5_000)),
-    client=MistralClient(model="ministral-3b-2512"),
+    client=MistralClient(model="mistral-small-latest"),
 )
 report = team.run(source, task="Найти вероятный первый контакт эпизода")
 # Путь также принимается напрямую: team.run("episode.csv", task="...")
@@ -323,11 +323,16 @@ except MistralAPIError as error:
     agent_report = None
 ```
 
-Ошибки соединения, включая TLS `UNEXPECTED_EOF_WHILE_READING`, автоматически
+`MistralClient` использует официальный пакет `mistralai` и его метод
+`client.chat.complete`, как в базовом примере Mistral. По умолчанию выбирается
+стабильный псевдоним `mistral-small-latest`; конкретную доступную модель можно
+передать через аргумент `model`.
+
+Ошибки соединения, ответы `429` и серверные ответы `5xx` автоматически
 повторяются два раза с короткой экспоненциальной задержкой. Число повторов можно
 изменить через `MistralClient(max_retries=...)`. Если все попытки завершились
-ошибкой, проверьте HTTPS proxy, корпоративный TLS inspection и доступ к
-`api.mistral.ai`: такая ошибка возникает до проверки API-ключа и выбора модели.
+ошибкой, проверьте HTTPS proxy, корпоративный TLS inspection, доступ к
+`api.mistral.ai` и доступность выбранной модели.
 
 Первым работает новый агент проверки входа: он объясняет выбранный 1-D/n-D
 маршрут по детерминированному `InputProfile`. После него вызывается EVT-агент.
