@@ -24,9 +24,12 @@ class MistralClient:
 
     def __init__(self, api_key: str | None = None, model: str = "mistral-large-latest",
                  base_url: str = "https://api.mistral.ai/v1"):
-        self.api_key = api_key or os.getenv("MISTRAL_API_KEY")
-        if not self.api_key:
-            raise ValueError("Pass api_key or set MISTRAL_API_KEY")
+        self._api_key = api_key or os.getenv("MISTRAL_API_KEY")
+        if not self._api_key:
+            raise ValueError(
+                "MISTRAL_API_KEY is not set; inject it through the process environment "
+                "or a secrets manager"
+            )
         self.model = model
         self.base_url = base_url.rstrip("/")
 
@@ -42,7 +45,7 @@ class MistralClient:
         request = Request(
             f"{self.base_url}/chat/completions",
             data=body,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
             method="POST",
         )
         with urlopen(request, timeout=60) as response:  # noqa: S310 - configured API endpoint

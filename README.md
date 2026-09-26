@@ -245,10 +245,39 @@ Kuramoto-рёбер. `method="auto"` применяет AR при устойчи
 
 ## Команда агентов с Mistral API
 
-Укажите ключ только через переменную окружения (не сохраняйте его в коде):
+Создайте **новый** ключ Mistral и передайте его только через менеджер секретов
+или переменную окружения. Не сохраняйте реальный ключ в Python-коде, CSV/EDF,
+README, `.env.example`, Git, issue или сообщении. Если ключ уже был опубликован,
+считайте его скомпрометированным, отзовите в консоли Mistral и выпустите новый.
+
+Локальный shell (значение не следует добавлять в shell history):
 
 ```bash
-export MISTRAL_API_KEY='...'
+read -s MISTRAL_API_KEY
+export MISTRAL_API_KEY
+```
+
+Библиотека намеренно не загружает `.env` автоматически. Файл `.env` исключён
+из Git; `.env.example` содержит только безопасный placeholder. Если приложение
+использует свой secrets manager или dotenv, оно должно поместить значение в
+окружение процесса до создания `MistralClient`.
+
+Для GitHub Actions добавьте новый ключ через **Settings → Secrets and variables
+→ Actions → New repository secret**, назовите его `MISTRAL_API_KEY`, затем
+передайте только нужному step:
+
+```yaml
+- name: Run Graph EVT agent
+  env:
+    MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+  run: python your_script.py
+```
+
+Либо используйте GitHub CLI: команда ниже безопасно запросит значение без
+добавления его в аргументы командной строки:
+
+```bash
+gh secret set MISTRAL_API_KEY
 ```
 
 ```python
