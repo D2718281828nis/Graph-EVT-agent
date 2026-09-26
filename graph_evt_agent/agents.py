@@ -5,13 +5,11 @@ silently changes thresholds, edges, or rankings.
 """
 
 from dataclasses import asdict, dataclass
+from importlib import import_module
 import json
 import os
-import ssl
 import time
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import numpy as np
 
@@ -26,11 +24,19 @@ class MistralAPIError(RuntimeError):
     """A safe, actionable error returned by the Mistral HTTP client."""
 
 
-class MistralClient:
-    """Small dependency-free client for Mistral's chat-completions API."""
+def _new_mistral_client(api_key: str, server_url: str | None) -> Any:
+    """Load the network client only when an LLM client is requested."""
+    mistral = import_module("mistralai")
+    if server_url is None:
+        return mistral.Mistral(api_key=api_key)
+    return mistral.Mistral(api_key=api_key, server_url=server_url)
 
-    def __init__(self, api_key: str | None = None, model: str = "ministral-3b-2512",
-                 base_url: str = "https://api.mistral.ai/v1", max_retries: int = 2):
+
+class MistralClient:
+    """Adapter around Mistral's supported Python SDK."""
+
+    def __init__(self, api_key: str | None = None, model: str = "mistral-small-latest",
+                 base_url: str | None = None, max_retries: int = 2):
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
         self._api_key = (api_key or os.getenv("MISTRAL_API_KEY") or "").strip()
@@ -40,51 +46,58 @@ class MistralClient:
                 "or a secrets manager"
             )
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/") if base_url else None
         self.max_retries = max_retries
+        self._client = _new_mistral_client(self._api_key, self.base_url)
+
+    @staticmethod
+    def _status_code(error: Exception) -> int | None:
+        """Extract an HTTP status from the exception shapes used by the SDK."""
+        status = getattr(error, "status_code", None)
+        if status is None:
+            status = getattr(error, "code", None)
+        if status is None and getattr(error, "response", None) is not None:
+            status = getattr(error.response, "status_code", None)
+        return status if isinstance(status, int) else None
 
     def complete(self, system: str, user: str) -> str:
-        body = json.dumps({
-            "model": self.model,
-            "temperature": 0.1,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        }).encode()
-        request = Request(
-            f"{self.base_url}/chat/completions",
-            data=body,
-            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
         for attempt in range(self.max_retries + 1):
             try:
-                with urlopen(request, timeout=60) as response:  # noqa: S310
-                    payload = json.load(response)
+                response = self._client.chat.complete(
+                    model=self.model,
+                    temperature=0.1,
+                    messages=messages,
+                )
                 break
-            except HTTPError as error:
-                if error.code in (401, 403):
+            except Exception as error:
+                status = self._status_code(error)
+                if status in (401, 403):
                     raise MistralAPIError(
-                        f"Mistral API rejected the credentials (HTTP {error.code}). "
+                        f"Mistral API rejected the credentials (HTTP {status}). "
                         "Check that MISTRAL_API_KEY contains an active API key (not its name, "
                         "a workspace ID, or the .env.example placeholder), then create a new "
                         "key in the Mistral console if necessary."
                     ) from None
-                raise MistralAPIError(
-                    f"Mistral chat-completions request failed with HTTP {error.code}."
-                ) from None
-            except (URLError, ssl.SSLError, TimeoutError) as error:
+                if status is not None and status < 500 and status != 429:
+                    raise MistralAPIError(
+                        f"Mistral chat-completions request failed with HTTP {status}."
+                    ) from None
                 if attempt < self.max_retries:
                     time.sleep(0.25 * (2 ** attempt))
                     continue
-                reason = error.reason if isinstance(error, URLError) else error
                 raise MistralAPIError(
                     f"Could not reach the Mistral API after {attempt + 1} attempts: "
-                    f"{reason}. Check the network, HTTPS proxy, and TLS interception "
-                    "settings; this failure occurs before model authentication."
+                    f"{error}. Check connectivity, the selected model, and Mistral service "
+                    "availability."
                 ) from None
-        return payload["choices"][0]["message"]["content"]
+        content = response.choices[0].message.content
+        if not isinstance(content, str):
+            raise MistralAPIError("Mistral returned a chat response without text content.")
+        return content
 
 
 @dataclass(frozen=True)
