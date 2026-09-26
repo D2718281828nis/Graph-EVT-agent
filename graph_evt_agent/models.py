@@ -30,3 +30,24 @@ class SourceRanking:
     @property
     def source(self) -> int:
         return int(self.node_ids[0])
+
+
+@dataclass(frozen=True)
+class InputProfile:
+    kind: str
+    n_time: int
+    n_channels: int
+    channel_names: tuple[str, ...]
+    missing_per_channel: np.ndarray
+    has_timestamps: bool
+    regular_time: bool | None
+    sampling_interval: float | None
+    actions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    input_profile: InputProfile
+    detection: EVTDetection
+    graph: GraphResult | None
+    ranking: SourceRanking | None

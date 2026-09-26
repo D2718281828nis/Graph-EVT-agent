@@ -1,6 +1,12 @@
 import numpy as np
 
-from graph_evt_agent import EVTConfig, GraphEVTPipeline
+from graph_evt_agent import (
+    EVTConfig,
+    GraphEVTPipeline,
+    InputConfig,
+    InputInspector,
+    TimeSeriesInput,
+)
 from graph_evt_agent.agents import EVTAgentTeam
 from graph_evt_agent.config import GraphConfig
 from graph_evt_agent.graph import dfa_graph, kuramoto_wavelet_graph
@@ -41,12 +47,14 @@ class FakeClient:
         return f"review-{self.calls}"
 
 
-def test_agent_team_uses_four_specialists_without_changing_result():
+def test_agent_team_routes_with_input_agent_without_changing_result():
     client = FakeClient()
     team = EVTAgentTeam(GraphEVTPipeline(EVTConfig(150, top_k=2, persistence=2)), client)
     report = team.run(sample_data())
-    assert client.calls == 4
-    assert report.final_report == "review-4"
+    assert client.calls == 5
+    assert report.input_review == "review-1"
+    assert report.final_report == "review-5"
+    assert report.result["input_profile"]["kind"] == "multivariate"
     assert report.result["ranking"]["node_ids"][0] == 2
 
 
@@ -79,3 +87,33 @@ def test_wavelet_kuramoto_detects_phase_locked_pair_reproducibly():
     assert not result.adjacency[0, 2]
     assert np.array_equal(result.adjacency, repeated.adjacency)
     assert result.diagnostics["order_parameter_mean"].shape == (1,)
+
+
+def test_input_agent_identifies_mapping_as_multivariate():
+    source = {"left": np.arange(30.0), "right": np.arange(30.0) + 1}
+    prepared = InputInspector().inspect(source)
+    assert prepared.values.shape == (30, 2)
+    assert prepared.profile.kind == "multivariate"
+    assert prepared.profile.channel_names == ("left", "right")
+
+
+def test_timestamp_validation_and_explicit_missing_policy():
+    values = np.arange(60.0).reshape(30, 2)
+    values[4, 1] = np.nan
+    source = TimeSeriesInput(values, timestamps=np.arange(30) * 0.5,
+                             channel_names=("a", "b"))
+    prepared = InputInspector(InputConfig(missing="interpolate")).inspect(source)
+    assert prepared.profile.regular_time
+    assert prepared.profile.sampling_interval == 0.5
+    assert prepared.profile.missing_per_channel.tolist() == [0, 1]
+    assert prepared.profile.actions == ("interpolated_missing_values",)
+    assert np.isfinite(prepared.values).all()
+
+
+def test_univariate_agent_route_skips_graph_agents():
+    client = FakeClient()
+    team = EVTAgentTeam(GraphEVTPipeline(EVTConfig(150, persistence=2)), client)
+    report = team.run(sample_data()[:, 2])
+    assert client.calls == 3  # input, EVT, coordinator
+    assert report.result["input_profile"]["kind"] == "univariate"
+    assert report.graph_review.startswith("Пропущено")

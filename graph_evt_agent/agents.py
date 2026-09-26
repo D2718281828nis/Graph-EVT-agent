@@ -52,6 +52,7 @@ class MistralClient:
 
 @dataclass(frozen=True)
 class AgentReport:
+    input_review: str
     detection_review: str
     graph_review: str
     localization_review: str
@@ -60,7 +61,7 @@ class AgentReport:
 
 
 class EVTAgentTeam:
-    """Four cooperating roles over one reproducible numerical pipeline."""
+    """Input router plus specialist reviewers over a deterministic pipeline."""
 
     def __init__(self, pipeline: GraphEVTPipeline, client: ChatClient):
         self.pipeline = pipeline
@@ -80,29 +81,77 @@ class EVTAgentTeam:
             return {k: EVTAgentTeam._jsonable(v) for k, v in asdict(value).items()}
         return value
 
-    def run(self, values: np.ndarray, task: str = "Найти источник события") -> AgentReport:
-        detection, graph, ranking = self.pipeline.run(values)
-        result = self._jsonable({"detection": detection, "graph": graph, "ranking": ranking})
-        evidence = json.dumps(result, ensure_ascii=False)
+    @staticmethod
+    def _evidence(run: Any) -> dict[str, Any]:
+        """Bound prompt size while retaining the decisions agents must audit."""
+        detection = run.detection
+        payload: dict[str, Any] = {
+            "input_profile": EVTAgentTeam._jsonable(run.input_profile),
+            "detection": {
+                "detected": detection.detected,
+                "time_index": detection.time_index,
+                "alarm_threshold": detection.alarm_threshold,
+                "indicator_min": float(detection.indicator.min()),
+                "indicator_max": float(detection.indicator.max()),
+                "indicator_length": len(detection.indicator),
+            },
+            "graph": None,
+            "ranking": None,
+        }
+        if run.graph is not None:
+            payload["graph"] = {
+                "method": run.graph.method,
+                "node_count": len(run.graph.adjacency),
+                "undirected_edge_count": int(np.triu(run.graph.adjacency, 1).sum()),
+                "dependence_min": float(run.graph.dependence.min()),
+                "dependence_max": float(run.graph.dependence.max()),
+            }
+        if run.ranking is not None:
+            limit = min(10, len(run.ranking.node_ids))
+            payload["ranking"] = {
+                "node_ids": run.ranking.node_ids[:limit].tolist(),
+                "probabilities": run.ranking.probabilities[:limit].tolist(),
+            }
+        return payload
+
+    def run(self, values: Any, task: str = "Найти источник события") -> AgentReport:
+        run = self.pipeline.run_detailed(values)
+        result = self._jsonable(run)
+        evidence_payload = self._evidence(run)
+        evidence = json.dumps(evidence_payload, ensure_ascii=False)
         guard = (
             "Опирайся только на JSON. Не изменяй численные результаты. "
             "Отделяй статистическую редкость от причинности и явно отмечай ограничения."
         )
+        input_review = self.client.complete(
+            f"Ты агент проверки входных данных. {guard}",
+            f"Определи 1-D или n-D маршрут, проверь временную ось, пропуски и объём: "
+            f"{json.dumps(evidence_payload['input_profile'], ensure_ascii=False)}",
+        )
         detection_review = self.client.complete(
             f"Ты агент EVT-детекции. {guard}", f"Задача: {task}\nРезультат: {evidence}"
         )
-        graph_review = self.client.complete(
-            f"Ты агент графовых зависимостей. {guard}", f"Проверь граф и утечку данных: {evidence}"
-        )
-        localization_review = self.client.complete(
-            f"Ты агент локализации. {guard}", f"Объясни ранжирование узлов: {evidence}"
-        )
+        if run.input_profile.kind == "univariate" or not run.detection.detected:
+            reason = ("одномерный вход" if run.input_profile.kind == "univariate"
+                      else "экстремальное событие не обнаружено")
+            graph_review = f"Пропущено: {reason}."
+            localization_review = f"Пропущено: {reason}."
+        else:
+            graph_review = self.client.complete(
+                f"Ты агент графовых зависимостей. {guard}",
+                f"Проверь граф и утечку данных: {evidence}",
+            )
+            localization_review = self.client.complete(
+                f"Ты агент локализации. {guard}", f"Объясни ранжирование узлов: {evidence}"
+            )
         reviews = json.dumps(
-            {"EVT": detection_review, "graph": graph_review, "localization": localization_review},
+            {"input": input_review, "EVT": detection_review, "graph": graph_review,
+             "localization": localization_review},
             ensure_ascii=False,
         )
         final_report = self.client.complete(
             f"Ты координатор команды. {guard}",
             f"Составь краткий итог для пользователя. Численные данные: {evidence}\nОтзывы: {reviews}",
         )
-        return AgentReport(detection_review, graph_review, localization_review, final_report, result)
+        return AgentReport(input_review, detection_review, graph_review,
+                           localization_review, final_report, result)

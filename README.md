@@ -65,6 +65,41 @@ python -m pip install -e '.[dev]'
 pytest
 ```
 
+## Входные данные и агент-маршрутизатор
+
+Перед EVT всегда запускается детерминированный `InputInspector`. Он определяет
+одномерный или многомерный вход, приводит ось времени к виду `[time, channel]`,
+проверяет имена каналов, timestamps, регулярность дискретизации и пропуски.
+Поддерживаются:
+
+- одномерные `list`/`numpy.ndarray`;
+- двумерные массивы;
+- `dict[str, sequence]`, где ключи становятся именами каналов;
+- pandas-подобные `DataFrame` через `to_numpy`, `columns` и `index`;
+- явный контейнер `TimeSeriesInput(values, timestamps, channel_names)`.
+
+По умолчанию пропуски и нерегулярное время являются ошибкой: библиотека не
+должна молча придумывать отсчёты. Политику можно указать явно:
+
+```python
+from graph_evt_agent import InputConfig, TimeSeriesInput
+
+source = TimeSeriesInput(
+    values=X,
+    timestamps=timestamps,
+    channel_names=("A1", "A2", "A3"),
+)
+input_config = InputConfig(
+    time_axis=0,
+    missing="interpolate",  # error | drop_rows | interpolate
+    require_regular_time=True,
+)
+```
+
+Интерполяция может использовать наблюдения с обеих сторон пропуска. Для
+строго online/causal сценария оставьте `missing="error"` и выполняйте заранее
+заявленную причинную импутацию до передачи данных библиотеке.
+
 ## Быстрый запуск без LLM
 
 Массив должен иметь форму `[время, канал]`. Первые `baseline_size` отсчётов
@@ -72,7 +107,7 @@ pytest
 
 ```python
 import numpy as np
-from graph_evt_agent import EVTConfig, GraphConfig, GraphEVTPipeline
+from graph_evt_agent import EVTConfig, GraphConfig, GraphEVTPipeline, InputConfig
 
 X = np.load("episode.npy")
 pipeline = GraphEVTPipeline(
@@ -92,9 +127,13 @@ pipeline = GraphEVTPipeline(
         surrogate_count=199,
         random_state=42,
     ),
+    input_config=InputConfig(missing="error"),
 )
 
-detection, graph, ranking = pipeline.run(X)
+run = pipeline.run_detailed(X)
+print("Тип входа:", run.input_profile.kind)
+print("Каналы:", run.input_profile.channel_names)
+detection, graph, ranking = run.detection, run.graph, run.ranking
 print("t_EVT:", detection.time_index)
 if ranking is not None:
     print("Кандидат-источник:", ranking.source)
@@ -155,17 +194,21 @@ team = EVTAgentTeam(
 )
 report = team.run(X, task="Найти вероятный первый контакт эпизода")
 
+print(report.input_review)         # агент проверки и маршрутизации входа
 print(report.detection_review)     # агент EVT
 print(report.graph_review)         # агент графа
 print(report.localization_review)  # агент локализации
 print(report.final_report)         # агент-координатор
 ```
 
-Четыре последовательных API-вызова имеют разные роли. Во все вызовы передаётся
-один и тот же сериализованный численный результат; системная инструкция
-запрещает агентам менять числа и требует обозначать причинные ограничения. Для
-тестов или собственного провайдера можно передать любой объект с методом
-`complete(system: str, user: str) -> str`.
+Первым работает новый агент проверки входа: он объясняет выбранный 1-D/n-D
+маршрут по детерминированному `InputProfile`. После него вызывается EVT-агент.
+Графовый агент и агент локализации вызываются только для обнаруженного n-D
+события; для 1-D они явно помечаются как пропущенные. Последним работает
+координатор. Поэтому n-D запуск делает пять API-вызовов, а 1-D или запуск без
+детекции — три. Системная инструкция запрещает агентам менять числа и требует
+обозначать причинные ограничения. Для тестов или собственного провайдера можно
+передать любой объект с методом `complete(system: str, user: str) -> str`.
 
 ## Правильный экспериментальный протокол
 

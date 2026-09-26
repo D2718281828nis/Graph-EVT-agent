@@ -3,6 +3,21 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
+class InputConfig:
+    """Rules applied by the input-inspection stage before EVT."""
+
+    time_axis: int = 0
+    missing: Literal["error", "drop_rows", "interpolate"] = "error"
+    require_regular_time: bool = True
+
+    def __post_init__(self) -> None:
+        if self.time_axis not in {0, 1}:
+            raise ValueError("time_axis must be 0 or 1")
+        if self.missing not in {"error", "drop_rows", "interpolate"}:
+            raise ValueError("unknown missing-value policy")
+
+
+@dataclass(frozen=True)
 class EVTConfig:
     """Leakage-safe peaks-over-threshold configuration."""
 
