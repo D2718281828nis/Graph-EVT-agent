@@ -10,6 +10,7 @@ def test_mistral_client_reads_key_from_environment(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "test-placeholder-not-a-real-key")
     client = MistralClient()
     assert client._api_key == "test-placeholder-not-a-real-key"
+    assert client.model == "ministral-3b-2512"
     assert not hasattr(client, "api_key")
 
 

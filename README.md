@@ -287,7 +287,7 @@ from graph_evt_agent.agents import EVTAgentTeam, MistralClient
 source = load_timeseries("episode.csv")  # либо "record.edf"
 team = EVTAgentTeam(
     pipeline=GraphEVTPipeline(EVTConfig(baseline_size=5_000)),
-    client=MistralClient(model="mistral-large-latest"),
+    client=MistralClient(model="ministral-3b-2512"),
 )
 report = team.run(source, task="Найти вероятный первый контакт эпизода")
 # Путь также принимается напрямую: team.run("episode.csv", task="...")

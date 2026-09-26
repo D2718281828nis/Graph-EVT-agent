@@ -27,7 +27,7 @@ class MistralAPIError(RuntimeError):
 class MistralClient:
     """Small dependency-free client for Mistral's chat-completions API."""
 
-    def __init__(self, api_key: str | None = None, model: str = "mistral-large-latest",
+    def __init__(self, api_key: str | None = None, model: str = "ministral-3b-2512",
                  base_url: str = "https://api.mistral.ai/v1"):
         self._api_key = (api_key or os.getenv("MISTRAL_API_KEY") or "").strip()
         if not self._api_key:
