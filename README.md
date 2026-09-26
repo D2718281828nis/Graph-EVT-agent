@@ -58,6 +58,12 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
+Для чтения EDF/EDF+/BDF установите дополнительную зависимость:
+
+```bash
+python -m pip install -e '.[edf]'
+```
+
 Для разработки:
 
 ```bash
@@ -77,6 +83,67 @@ pytest
 - `dict[str, sequence]`, где ключи становятся именами каналов;
 - pandas-подобные `DataFrame` через `to_numpy`, `columns` и `index`;
 - явный контейнер `TimeSeriesInput(values, timestamps, channel_names)`.
+
+### Ограничения структуры CSV
+
+Библиотека принимает **wide CSV**, где одна строка — один синхронный момент
+времени, а один столбец — один канал. Первая строка обязательно является
+заголовком. Пример допустимого файла:
+
+```csv
+timestamp,A1,A2,A3
+0.000,12.1,8.0,-0.2
+0.005,12.4,8.1,-0.1
+0.010,12.2,8.4,0.0
+```
+
+Требования:
+
+1. Заголовки непустые и уникальные.
+2. `timestamp`, `time`, `datetime` или `date_time` автоматически считается
+   временным столбцом. Другое имя нужно передать как `time_column="sample_time"`.
+3. Время должно быть числом либо ISO-8601 datetime, строго возрастать, не иметь
+   дублей и по умолчанию иметь постоянный шаг.
+4. Все остальные ячейки должны содержать числа с точкой как десятичным
+   разделителем. Пустая ячейка считается `NaN` и обрабатывается согласно
+   `InputConfig.missing`.
+5. Формат long (`timestamp,channel,value`) не поддерживается — его необходимо
+   заранее преобразовать в wide.
+6. В файле должен быть хотя бы один сигнальный столбец. Все каналы должны иметь
+   одинаковое число синхронных отсчётов.
+7. Первые `baseline_size` строк должны быть чистым предсобытийным фоном, после
+   которого остаётся хотя бы один анализируемый отсчёт.
+
+Чтение CSV:
+
+```python
+from graph_evt_agent import load_timeseries
+
+source = load_timeseries("episode.csv")
+# Для CSV с другим временным столбцом/разделителем:
+source = load_timeseries("episode.csv", time_column="sample_time", delimiter=";")
+```
+
+### Ограничения структуры EDF/EDF+/BDF
+
+EDF загружается через необязательный пакет `pyEDFlib`. Каждый EDF signal
+становится каналом, а `signal label` — его именем. Текущая версия требует:
+
+1. хотя бы один сигнал и уникальные непустые labels;
+2. одинаковую sampling frequency для всех каналов;
+3. одинаковое число samples для всех каналов;
+4. отсутствие пропусков/нечисловых физических значений;
+5. первые `baseline_size` samples являются предсобытийным фоном.
+
+Если EDF содержит каналы с разными частотами или длинами, их нужно заранее
+выбрать и ресемплировать. Библиотека намеренно не выполняет скрытый resampling.
+Временная ось EDF формируется в секундах как `sample / sampling_frequency`.
+
+```python
+from graph_evt_agent import load_timeseries
+
+source = load_timeseries("record.edf")  # также поддерживается .bdf
+```
 
 По умолчанию пропуски и нерегулярное время являются ошибкой: библиотека не
 должна молча придумывать отсчёты. Политику можно указать явно:
@@ -106,10 +173,11 @@ input_config = InputConfig(
 обязаны предшествовать событию.
 
 ```python
-import numpy as np
-from graph_evt_agent import EVTConfig, GraphConfig, GraphEVTPipeline, InputConfig
+from graph_evt_agent import (
+    EVTConfig, GraphConfig, GraphEVTPipeline, InputConfig, load_timeseries,
+)
 
-X = np.load("episode.npy")
+source = load_timeseries("episode.csv")  # либо "record.edf"
 pipeline = GraphEVTPipeline(
     EVTConfig(
         baseline_size=5_000,
@@ -130,7 +198,8 @@ pipeline = GraphEVTPipeline(
     input_config=InputConfig(missing="error"),
 )
 
-run = pipeline.run_detailed(X)
+run = pipeline.run_detailed(source)
+# Эквивалентно: run = pipeline.run_detailed("episode.csv")
 print("Тип входа:", run.input_profile.kind)
 print("Каналы:", run.input_profile.channel_names)
 detection, graph, ranking = run.detection, run.graph, run.ranking
@@ -183,16 +252,16 @@ export MISTRAL_API_KEY='...'
 ```
 
 ```python
-import numpy as np
-from graph_evt_agent import EVTConfig, GraphEVTPipeline
+from graph_evt_agent import EVTConfig, GraphEVTPipeline, load_timeseries
 from graph_evt_agent.agents import EVTAgentTeam, MistralClient
 
-X = np.load("episode.npy")
+source = load_timeseries("episode.csv")  # либо "record.edf"
 team = EVTAgentTeam(
     pipeline=GraphEVTPipeline(EVTConfig(baseline_size=5_000)),
     client=MistralClient(model="mistral-large-latest"),
 )
-report = team.run(X, task="Найти вероятный первый контакт эпизода")
+report = team.run(source, task="Найти вероятный первый контакт эпизода")
+# Путь также принимается напрямую: team.run("episode.csv", task="...")
 
 print(report.input_review)         # агент проверки и маршрутизации входа
 print(report.detection_review)     # агент EVT

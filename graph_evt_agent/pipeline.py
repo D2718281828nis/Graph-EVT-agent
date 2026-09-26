@@ -1,9 +1,11 @@
 from typing import Any
+from os import PathLike
 
 from .config import EVTConfig, GraphConfig, InputConfig
 from .evt import detect
 from .graph import build_graph
 from .input import InputInspector
+from .io import load_timeseries
 from .localization import rank_sources
 from .models import EVTDetection, GraphResult, PipelineResult, SourceRanking
 
@@ -19,6 +21,8 @@ class GraphEVTPipeline:
 
     def run_detailed(self, values: Any) -> PipelineResult:
         """Inspect input, select the 1-D/n-D route, and return full provenance."""
+        if isinstance(values, (str, PathLike)):
+            values = load_timeseries(values)
         prepared = self.inspector.inspect(values)
         data = prepared.values
         detection = detect(data, self.evt_config)

@@ -13,10 +13,10 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.5"]
+edf = ["pyEDFlib>=0.1.38"]
 
 [tool.setuptools.packages.find]
 include = ["graph_evt_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
