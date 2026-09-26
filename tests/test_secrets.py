@@ -1,4 +1,5 @@
 from io import BytesIO
+import ssl
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -40,9 +41,34 @@ def test_mistral_client_explains_unauthorized_without_exposing_key(monkeypatch):
 
 
 def test_mistral_client_explains_network_errors(monkeypatch):
+    attempts = 0
+
     def fail(_request, timeout):
+        nonlocal attempts
+        attempts += 1
         raise URLError("temporary DNS failure")
 
     monkeypatch.setattr("graph_evt_agent.agents.urlopen", fail)
-    with pytest.raises(MistralAPIError, match="temporary DNS failure"):
+    monkeypatch.setattr("graph_evt_agent.agents.time.sleep", lambda _delay: None)
+    with pytest.raises(MistralAPIError, match="after 3 attempts.*temporary DNS failure"):
         MistralClient(api_key="secret").complete("system", "user")
+    assert attempts == 3
+
+
+def test_mistral_client_retries_transient_ssl_eof(monkeypatch):
+    attempts = 0
+
+    def complete_after_eof(_request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ssl.SSLError("UNEXPECTED_EOF_WHILE_READING")
+        return BytesIO(b'{"choices":[{"message":{"content":"ok"}}]}')
+
+    monkeypatch.setattr("graph_evt_agent.agents.urlopen", complete_after_eof)
+    monkeypatch.setattr("graph_evt_agent.agents.time.sleep", lambda _delay: None)
+
+    result = MistralClient(api_key="secret").complete("system", "user")
+
+    assert result == "ok"
+    assert attempts == 3
