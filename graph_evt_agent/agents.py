@@ -137,6 +137,7 @@ class EVTAgentTeam:
         detection = run.detection
         payload: dict[str, Any] = {
             "input_profile": EVTAgentTeam._jsonable(run.input_profile),
+            "execution_plan": EVTAgentTeam._jsonable(run.plan),
             "detection": {
                 "detected": detection.detected,
                 "time_index": detection.time_index,
@@ -161,6 +162,18 @@ class EVTAgentTeam:
             payload["ranking"] = {
                 "node_ids": run.ranking.node_ids[:limit].tolist(),
                 "probabilities": run.ranking.probabilities[:limit].tolist(),
+            }
+        if run.process is not None:
+            strongest = np.dstack(np.unravel_index(
+                np.argsort(run.process.attention.ravel())[::-1],
+                run.process.attention.shape,
+            ))[0][:10]
+            payload["learned_process"] = {
+                "gnn_source": run.process.gnn_source,
+                "gat_source": run.process.gat_source,
+                "gnn_probabilities": run.process.gnn_probabilities.tolist(),
+                "gat_probabilities": run.process.gat_probabilities.tolist(),
+                "strongest_attention_edges": strongest.tolist(),
             }
         return payload
 

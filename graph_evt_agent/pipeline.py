@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Protocol
 from os import PathLike
 
 from .config import EVTConfig, GraphConfig, InputConfig
@@ -8,16 +8,24 @@ from .input import InputInspector
 from .io import load_timeseries
 from .localization import rank_sources
 from .models import EVTDetection, GraphResult, PipelineResult, SourceRanking
+from .planner import PipelinePlanner
+
+
+class ProcessModel(Protocol):
+    def predict(self, features: Any, adjacency: Any) -> Any: ...
 
 
 class GraphEVTPipeline:
     """Deterministic EVT → frozen graph → source-ranking pipeline."""
 
     def __init__(self, evt: EVTConfig, graph: GraphConfig | None = None,
-                 input_config: InputConfig | None = None):
+                 input_config: InputConfig | None = None,
+                 process_model: ProcessModel | None = None):
         self.evt_config = evt
         self.graph_config = graph or GraphConfig()
         self.inspector = InputInspector(input_config)
+        self.process_model = process_model
+        self.planner = PipelinePlanner()
 
     def run_detailed(self, values: Any) -> PipelineResult:
         """Inspect input, select the 1-D/n-D route, and return full provenance."""
@@ -25,13 +33,20 @@ class GraphEVTPipeline:
             values = load_timeseries(values)
         prepared = self.inspector.inspect(values)
         data = prepared.values
+        plan = self.planner.plan(data, self.evt_config.baseline_size,
+                                 self.process_model is not None)
         detection = detect(data, self.evt_config)
         if data.shape[1] == 1 or not detection.detected:
-            return PipelineResult(prepared.profile, detection, None, None)
+            plan = self.planner.observe(plan, detection.detected)
+            return PipelineResult(prepared.profile, detection, None, None, plan)
         graph = build_graph(data[: self.evt_config.baseline_size], self.graph_config)
         ranking = rank_sources(data, detection.time_index, graph.adjacency,
                                detection.location, detection.scale)
-        return PipelineResult(prepared.profile, detection, graph, ranking)
+        process = None
+        if self.process_model is not None:
+            process = self.process_model.predict(ranking.features, graph.adjacency)
+        plan = self.planner.observe(plan, True, process is not None)
+        return PipelineResult(prepared.profile, detection, graph, ranking, plan, process)
 
     def run(self, values: Any) -> tuple[EVTDetection, GraphResult | None, SourceRanking | None]:
         """Compatibility API returning the original three-result tuple."""

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from graph_evt_agent import (
     EVTConfig,
@@ -10,6 +11,12 @@ from graph_evt_agent import (
 from graph_evt_agent.agents import EVTAgentTeam
 from graph_evt_agent.config import GraphConfig
 from graph_evt_agent.graph import dfa_graph, kuramoto_wavelet_graph
+from graph_evt_agent.models import GraphProcessPrediction
+
+
+def test_directed_graph_configuration_is_rejected_explicitly():
+    with pytest.raises(ValueError, match="directed graphs are not supported"):
+        GraphConfig(directed=True)
 
 
 def sample_data() -> np.ndarray:
@@ -20,6 +27,24 @@ def sample_data() -> np.ndarray:
     return data
 
 
+class FakeProcessModel:
+    def predict(self, features, adjacency):
+        probabilities = np.arange(1, len(features) + 1, dtype=float)
+        probabilities /= probabilities.sum()
+        attention = adjacency / adjacency.sum(axis=1, keepdims=True)
+        return GraphProcessPrediction(probabilities, probabilities, attention)
+
+
+def test_pipeline_executes_optional_learned_process_model():
+    result = GraphEVTPipeline(
+        EVTConfig(150, top_k=2, persistence=2), process_model=FakeProcessModel()
+    ).run_detailed(sample_data())
+    assert result.process.gnn_source == 3
+    assert result.process.gat_source == 3
+    assert result.process.attention.shape == (4, 4)
+    assert result.plan.completed_actions[-1] == "infer_gnn_gat_process"
+
+
 def test_pipeline_detects_and_ranks_earliest_source():
     pipeline = GraphEVTPipeline(EVTConfig(150, top_k=2, persistence=2))
     detection, graph, ranking = pipeline.run(sample_data())
@@ -28,14 +53,20 @@ def test_pipeline_detects_and_ranks_earliest_source():
     assert graph.adjacency.shape == (4, 4)
     assert ranking.source == 2
     assert np.isclose(ranking.probabilities.sum(), 1)
+    detailed = pipeline.run_detailed(sample_data())
+    assert detailed.plan.route == "n-d"
+    assert detailed.plan.stop_reason is None
+    assert detailed.plan.completed_actions[-1] == "rank_source"
 
 
 def test_one_channel_does_not_claim_localization():
-    detection, graph, ranking = GraphEVTPipeline(
-        EVTConfig(150, persistence=2)
-    ).run(sample_data()[:, 2])
+    pipeline = GraphEVTPipeline(EVTConfig(150, persistence=2))
+    detection, graph, ranking = pipeline.run(sample_data()[:, 2])
     assert detection.detected
     assert graph is None and ranking is None
+    result = pipeline.run_detailed(sample_data()[:, 2])
+    assert result.plan.route == "1-d"
+    assert result.plan.stop_reason == "single_channel_cannot_localize"
 
 
 class FakeClient:
