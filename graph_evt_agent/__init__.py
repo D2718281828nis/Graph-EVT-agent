@@ -3,12 +3,20 @@
 from .config import EVTConfig, GraphConfig, InputConfig
 from .input import InputInspector, TimeSeriesInput
 from .io import load_csv, load_edf, load_timeseries
-from .models import EVTDetection, GraphResult, InputProfile, PipelineResult, SourceRanking
+from .learning import GraphEpisode, GraphLearningConfig, GraphProcessModel
+from .models import (
+    EVTDetection, GraphProcessPrediction, GraphResult, InputProfile, PipelinePlan,
+    PipelineResult, SourceRanking,
+)
 from .pipeline import GraphEVTPipeline
 
 __all__ = [
     "EVTConfig",
     "GraphConfig",
+    "GraphEpisode",
+    "GraphLearningConfig",
+    "GraphProcessModel",
+    "GraphProcessPrediction",
     "InputConfig",
     "InputInspector",
     "InputProfile",
@@ -16,6 +24,7 @@ __all__ = [
     "load_edf",
     "load_timeseries",
     "PipelineResult",
+    "PipelinePlan",
     "EVTDetection",
     "GraphResult",
     "GraphEVTPipeline",

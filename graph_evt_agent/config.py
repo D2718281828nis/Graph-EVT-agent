@@ -56,6 +56,8 @@ class GraphConfig:
     def __post_init__(self) -> None:
         if self.method not in {"auto", "ar", "dfa", "kuramoto", "ensemble"}:
             raise ValueError("unknown graph method")
+        if self.directed:
+            raise ValueError("directed graphs are not supported")
         if self.ar_order < 1:
             raise ValueError("ar_order must be positive")
         if not 0 <= self.edge_threshold <= 1:

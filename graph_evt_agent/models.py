@@ -33,6 +33,34 @@ class SourceRanking:
 
 
 @dataclass(frozen=True)
+class GraphProcessPrediction:
+    """Learned source scores and an episode-specific process graph."""
+
+    gnn_probabilities: np.ndarray
+    gat_probabilities: np.ndarray
+    attention: np.ndarray
+
+    @property
+    def gnn_source(self) -> int:
+        return int(np.argmax(self.gnn_probabilities))
+
+    @property
+    def gat_source(self) -> int:
+        return int(np.argmax(self.gat_probabilities))
+
+
+@dataclass(frozen=True)
+class PipelinePlan:
+    """Deterministic plan/act/observe trace for one pipeline execution."""
+
+    route: str
+    baseline_stationary: bool
+    initial_actions: tuple[str, ...]
+    completed_actions: tuple[str, ...]
+    stop_reason: str | None
+
+
+@dataclass(frozen=True)
 class InputProfile:
     kind: str
     n_time: int
@@ -51,3 +79,5 @@ class PipelineResult:
     detection: EVTDetection
     graph: GraphResult | None
     ranking: SourceRanking | None
+    plan: PipelinePlan | None = None
+    process: GraphProcessPrediction | None = None

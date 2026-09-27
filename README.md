@@ -1,5 +1,9 @@
 # Graph EVT Agent
 
+> An English walkthrough of the deterministic pipeline, the Mistral reviewer
+> sequence, and the implementation status of DFA, Kuramoto, GNN, and GAT is
+> available in [`docs/PIPELINE.md`](docs/PIPELINE.md).
+
 Python-библиотека для воспроизводимого поиска экстремального эпизода в
 многоканальном временном ряду, построения гипотезы графа зависимостей и
 ранжирования возможных узлов-источников. Несколько агентов Mistral независимо
@@ -210,6 +214,12 @@ if ranking is not None:
 else:
     print("Источник не локализован: нет события или наблюдается один канал")
 ```
+
+После накопления независимо размеченных эпизодов можно обучить опциональную
+GNN/GAT-модель локализации и передать её в `GraphEVTPipeline` через
+`process_model`. GNN использует признаки узлов на расстоянии до двух рёбер, а
+GAT возвращает отдельную матрицу attention для нового эпизода. Полный пример и
+ограничения приведены в [описании pipeline](docs/PIPELINE.md#learned-gnn-and-gat-process-model).
 
 Возвращаются dataclass-объекты:
 
