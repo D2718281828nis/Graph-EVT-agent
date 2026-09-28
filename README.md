@@ -3,6 +3,10 @@
 > An English walkthrough of the deterministic pipeline, the Mistral reviewer
 > sequence, and the implementation status of DFA, Kuramoto, GNN, and GAT is
 > available in [`docs/PIPELINE.md`](docs/PIPELINE.md).
+>
+> An English overview of all capabilities (EVT, AR/DFA/Kuramoto-wavelet graphs,
+> GNN/GAT, orchestration and agents) with usage examples is in
+> [`docs/OVERVIEW.md`](docs/OVERVIEW.md).
 
 Python-библиотека для воспроизводимого поиска экстремального эпизода в
 многоканальном временном ряду, построения гипотезы графа зависимостей и
