@@ -47,6 +47,12 @@ input ──► InputInspector ──► PipelinePlanner ──► EVT (POT/GPD)
 | Source ranking | `localization.py` | Scores peak, energy, latency and neighbor agreement; softmax weights | `SourceRanking` |
 | GNN / GAT | `learning.py` | Pure-NumPy supervised node classifiers trained on labelled episodes | `GraphProcessPrediction` |
 | Agent team | `agents.py` | Role-based LLM reviewers + coordinator over bounded JSON evidence | `AgentReport` |
+| Episode labelling | `labeling.py` | Finds every declustered EVT event per recording, builds node features on the frozen baseline graph, labels sources as manual / pseudo / abstained | `EpisodeLabels` |
+| Training | `training.py` | Group-wise split, GNN/GAT training with per-epoch history, Top-1/Top-k/MRR/NLL vs. heuristic, `best_epoch` | `TrainingReport` |
+| Evaluation orchestration | `evaluation.py` | Routes each 1-D/n-D case, scores detection (hit/miss/false alarm/delay) and n-D localization | `EvaluationReport` |
+| Progress | `progress.py` | `verbose` progress bars (tqdm or text) and `progress_callback` events | `ProgressEvent` |
+| Visualization | `visualization.py` | Detection, labelled recordings, training dashboard, attention, evaluation plots (matplotlib) | `Figure` |
+| Synthetic data | `synthetic.py` | Reproducible 1-D/n-D episodes and multi-event recordings with known source | `SyntheticEpisode` |
 
 ### EVT detection ("when?")
 
@@ -154,6 +160,10 @@ a local model, or a fake for tests).
 
 ## How to use it
 
+For a step-by-step story (labelling → training with quality plots → 1-D/n-D
+evaluation → progress callbacks) with executed notebooks, see
+[STORY.md](STORY.md) and [`notebooks/`](../notebooks).
+
 ### Install
 
 ```bash
@@ -163,7 +173,7 @@ python -m venv .venv && source .venv/bin/activate
 python -m pip install -e .          # core: numpy, scipy, mistralai
 python -m pip install -e '.[edf]'   # + EDF/BDF reading
 python -m pip install -e '.[dev]'   # + pytest, ruff
-pytest                              # 26 offline tests, no API key needed
+pytest                              # offline tests, no API key needed
 ```
 
 Requires Python ≥ 3.10.

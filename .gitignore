@@ -11,3 +11,7 @@ dist/
 !.env.example
 *.pem
 *.key
+
+# Files written by the tutorial notebooks
+notebooks/*.csv
+notebooks/*.npz

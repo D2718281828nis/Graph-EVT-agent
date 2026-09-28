@@ -1,16 +1,34 @@
 """Public API for Graph EVT Agent."""
 
 from .config import EVTConfig, GraphConfig, InputConfig
+from .evaluation import CaseEvaluation, EvaluationCase, EvaluationOrchestrator, EvaluationReport
 from .input import InputInspector, TimeSeriesInput
 from .io import load_csv, load_edf, load_timeseries
+from .labeling import EpisodeLabeler, EpisodeLabels, LabelingConfig, LabelledEpisode
 from .learning import GraphEpisode, GraphLearningConfig, GraphProcessModel
 from .models import (
     EVTDetection, GraphProcessPrediction, GraphResult, InputProfile, PipelinePlan,
     PipelineResult, SourceRanking,
 )
 from .pipeline import GraphEVTPipeline
+from .progress import Progress, ProgressEvent
+from .training import ProcessModelTrainer, RankingMetrics, TrainingReport, ranking_metrics
 
 __all__ = [
+    "CaseEvaluation",
+    "EpisodeLabeler",
+    "EpisodeLabels",
+    "EvaluationCase",
+    "EvaluationOrchestrator",
+    "EvaluationReport",
+    "LabelingConfig",
+    "LabelledEpisode",
+    "ProcessModelTrainer",
+    "Progress",
+    "ProgressEvent",
+    "RankingMetrics",
+    "TrainingReport",
+    "ranking_metrics",
     "EVTConfig",
     "GraphConfig",
     "GraphEpisode",

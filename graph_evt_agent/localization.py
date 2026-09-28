@@ -5,6 +5,14 @@ import numpy as np
 from .models import SourceRanking
 
 
+def heuristic_probabilities(features: np.ndarray) -> np.ndarray:
+    """Softmax of the fixed score over ``[peak, energy, latency, degree, neighbor]``."""
+    peak, energy, latency, _, neighbor = np.asarray(features, dtype=float).T
+    raw = peak + np.sqrt(energy) + 0.15 * neighbor - 0.5 * latency
+    raw -= raw.max()
+    return np.exp(raw) / np.exp(raw).sum()
+
+
 def rank_sources(values: np.ndarray, event_time: int, adjacency: np.ndarray,
                  location: np.ndarray, scale: np.ndarray, window: int = 12) -> SourceRanking:
     """Rank early, strong responses and reward agreement with graph neighbors."""
@@ -18,9 +26,7 @@ def rank_sources(values: np.ndarray, event_time: int, adjacency: np.ndarray,
     degree = adjacency.sum(axis=1) - 1
     neighbor = adjacency @ peak / np.maximum(adjacency.sum(axis=1), 1)
     features = np.column_stack([peak, energy, latency, degree, neighbor])
-    raw = peak + np.sqrt(energy) + 0.15 * neighbor - 0.5 * latency
-    raw -= raw.max()
-    probabilities = np.exp(raw) / np.exp(raw).sum()
+    probabilities = heuristic_probabilities(features)
     order = np.argsort(-probabilities)
     return SourceRanking(order, probabilities[order], features)
 

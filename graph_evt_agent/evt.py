@@ -49,3 +49,27 @@ def detect(values: np.ndarray, config: EVTConfig) -> EVTDetection:
             break
     return EVTDetection(found is not None, found, threshold, indicator, location, scale)
 
+
+
+def find_events(detection: EVTDetection, config: EVTConfig,
+                refractory: int = 50) -> list[int]:
+    """Return every persistent post-baseline alarm onset, declustered.
+
+    After an onset the detector waits ``refractory`` samples and then until the
+    indicator falls back below the frozen threshold before it can re-arm, so a
+    single long excursion yields one event.
+    """
+    if refractory < 0:
+        raise ValueError("refractory must be non-negative")
+    hits = detection.indicator > detection.alarm_threshold
+    onsets: list[int] = []
+    start, last = config.baseline_size, len(hits) - config.persistence
+    while start <= last:
+        if bool(np.all(hits[start : start + config.persistence])):
+            onsets.append(start)
+            start += max(refractory, config.persistence)
+            while start <= last and hits[start]:
+                start += 1
+        else:
+            start += 1
+    return onsets
