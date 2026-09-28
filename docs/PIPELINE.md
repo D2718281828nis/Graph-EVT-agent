@@ -1,8 +1,10 @@
 # Agent and numerical pipeline
 
 This note distinguishes the deterministic signal-processing pipeline from the
-optional LLM review team. In particular, this repository does **not** implement
-a GNN or GAT.
+optional LLM review team. The optional supervised GNN/GAT stage is described in
+[Learned GNN and GAT process model](#learned-gnn-and-gat-process-model); the
+labelling, training and evaluation workflow around it is walked through in
+[STORY.md](STORY.md).
 
 ## End-to-end data flow
 

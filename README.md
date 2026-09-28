@@ -3,6 +3,14 @@
 > An English walkthrough of the deterministic pipeline, the Mistral reviewer
 > sequence, and the implementation status of DFA, Kuramoto, GNN, and GAT is
 > available in [`docs/PIPELINE.md`](docs/PIPELINE.md).
+>
+> An English overview of all capabilities (EVT, AR/DFA/Kuramoto-wavelet graphs,
+> GNN/GAT, orchestration and agents) with usage examples is in
+> [`docs/OVERVIEW.md`](docs/OVERVIEW.md).
+>
+> Пошаговая история использования библиотеки в собственном коде (разметка
+> эпизодов, обучение GNN/GAT, оценка 1-D/n-D, progress bar) — в
+> [`docs/STORY.md`](docs/STORY.md) и исполненных ноутбуках [`notebooks/`](notebooks).
 
 Python-библиотека для воспроизводимого поиска экстремального эпизода в
 многоканальном временном ряду, построения гипотезы графа зависимостей и
@@ -49,8 +57,11 @@ Python-библиотека для воспроизводимого поиска
 `POT/GPD → граф AR/DFA/Kuramoto-wavelet → transparent ranking`. Для
 нестационарного случая доступны настоящий multiscale DFA/cross-DFA и
 вейвлет-фазы Морле с Kuramoto order parameter и circular-shift surrogate test.
-Обучаемый GAT по-прежнему нельзя честно обучить без набора независимо размеченных
-эпизодов, поэтому библиотека не маскирует эвристику под GAT.
+Обучаемые GNN/GAT (`GraphProcessModel`) требуют набора независимо размеченных
+эпизодов. Для их подготовки есть `EpisodeLabeler` (EVT + граф, ручные и
+псевдо-метки), для обучения с визуализацией качества — `ProcessModelTrainer`, а
+для итоговой проверки 1-D/n-D входов — `EvaluationOrchestrator`. Эвристика не
+выдаётся за GAT: псевдо-метки явно помечаются и лишь копируют прозрачный ранжировщик.
 
 ## Установка
 
@@ -253,6 +264,45 @@ Kuramoto-рёбер. `method="auto"` применяет AR при устойчи
 это пересечение при обнаруженном изменении режима. Для научного сравнения лучше
 выбрать метод заранее на train, а не полагаться на эвристику `auto`.
 
+## Разметка эпизодов, обучение GNN/GAT, оценка и прогресс
+
+```bash
+python -m pip install -e '.[viz,progress]'   # matplotlib и tqdm (необязательно)
+```
+
+```python
+from graph_evt_agent import (
+    EpisodeLabeler, EvaluationCase, EvaluationOrchestrator, GraphLearningConfig,
+    ProcessModelTrainer,
+)
+from graph_evt_agent import visualization as viz
+
+# 1) все EVT-события каждой записи → признаки узлов + граф baseline + метка
+labels = EpisodeLabeler(pipeline, verbose=True).label(
+    {"rec1": source1, "rec2": source2},
+    annotations={"rec1": [(12_340, "A3")]},   # ручные метки (onset, канал)
+)
+print(labels.summary())                        # manual / pseudo / abstained
+
+# 2) обучение GNN и GAT с разбиением по записям и кривыми качества
+report = ProcessModelTrainer(GraphLearningConfig(epochs=300), verbose=True).train(labels)
+viz.plot_training_report(report).savefig("training.png")
+report.model.save("graph_process_model.npz")
+
+# 3) оценка смешанного набора 1-D и n-D входов
+trained = GraphEVTPipeline(evt_config, graph_config, process_model=report.model)
+evaluation = EvaluationOrchestrator(trained, verbose=True).evaluate([
+    EvaluationCase(test_nd, event_time=5_210, source="A3"),
+    EvaluationCase(test_1d, event_time=7_020),
+])
+print(evaluation.summary())
+```
+
+`verbose=True` показывает progress bar (tqdm при наличии, иначе текстовый),
+`verbose=2` — вложенные этапы, а `progress_callback=fn` передаёт
+`ProgressEvent(desc, step, total, message, elapsed)` в ваш GUI, логгер или
+веб-сервис. Подробности и ограничения — в [`docs/STORY.md`](docs/STORY.md).
+
 ## Команда агентов с Mistral API
 
 Создайте **новый** ключ Mistral и передайте его только через менеджер секретов
@@ -373,8 +423,9 @@ except MistralAPIError as error:
 
 - Пропуски и бесконечные значения отклоняются; их обработка должна быть частью
   заранее определённого preprocessing.
-- Автоматический выбор порядка AR и настоящий обучаемый GAT пока не входят в
-  публичный API; масштабы DFA и полосы wavelet нужно выбирать на train.
+- Автоматический выбор порядка AR не входит в публичный API; масштабы DFA и
+  полосы wavelet нужно выбирать на train. GNN/GAT полезны только при наличии
+  ручной разметки источников и проверки на отложенных записях.
 - Эвристические вероятности ранжирования не являются калиброванными без
   отдельной validation-выборки.
 - Медицинское или промышленное решение нельзя принимать только по выводу этой
