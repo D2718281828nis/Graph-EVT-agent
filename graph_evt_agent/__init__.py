@@ -13,6 +13,7 @@ from .models import (
 from .pipeline import GraphEVTPipeline
 from .progress import Progress, ProgressEvent
 from .training import ProcessModelTrainer, RankingMetrics, TrainingReport, ranking_metrics
+from .temporal import TemporalGraphConfig, univariate_graph_episode, univariate_temporal_graph
 
 __all__ = [
     "CaseEvaluation",
@@ -48,4 +49,7 @@ __all__ = [
     "GraphEVTPipeline",
     "SourceRanking",
     "TimeSeriesInput",
+    "TemporalGraphConfig",
+    "univariate_graph_episode",
+    "univariate_temporal_graph",
 ]

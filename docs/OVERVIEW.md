@@ -134,6 +134,32 @@ It needs **independent episodes with known source labels**; the package never
 invents pseudo-labels. When a fitted model is passed to the pipeline via
 `process_model=`, results appear in `run.process`.
 
+For **1-D recordings**, the physical source sensor is not identifiable, but a
+temporal graph can learn the event-onset window. `univariate_temporal_graph`
+turns overlapping windows into nodes, connects neighboring windows, and uses
+a clean prefix for robust feature scaling. The convenience trainer uses the
+same GNN, GAT, split logic, metrics, and model persistence as the n-D path:
+
+```python
+from graph_evt_agent import GraphLearningConfig, ProcessModelTrainer, TemporalGraphConfig
+
+temporal = TemporalGraphConfig(window_size=32, stride=8, baseline_size=400)
+report = ProcessModelTrainer(
+    GraphLearningConfig(epochs=300), validation_fraction=0.25
+).train_1d(
+    {"run-a": signal_a, "run-b": signal_b, "run-c": signal_c},
+    {"run-a": 710, "run-b": 843, "run-c": 692},
+    temporal_config=temporal,
+)
+```
+
+Here the prediction is a **time-window index**, rather than a channel index.
+Build a graph for a new recording with `univariate_temporal_graph`, call
+`report.model.predict(features, adjacency)`, and map the predicted node through
+the returned `window_starts`. Keep the configured baseline prefix event-free
+and split independent recordings (not windows from one recording) across
+training and validation.
+
 ### Orchestration and agents
 
 There are two orchestration layers:
