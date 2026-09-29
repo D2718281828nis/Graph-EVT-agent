@@ -7,7 +7,7 @@ episodes. The resulting :class:`TrainingReport` feeds the plots in
 """
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Mapping, Sequence
 import warnings
 
 import numpy as np
@@ -183,3 +183,39 @@ class ProcessModelTrainer:
         validation_metrics, predicted, sources = self._score(model, held_out)
         return TrainingReport(model, model.history_, train_metrics, validation_metrics,
                               predicted, sources, unit, len(train), len(held_out))
+
+    def train_1d(self, recordings: Sequence[np.ndarray] | Mapping[str, np.ndarray],
+                 event_times: Sequence[int] | Mapping[str, int], *, temporal_config=None,
+                 validation: Sequence[tuple[np.ndarray, int]] | None = None
+                 ) -> TrainingReport:
+        """Train GNN/GAT on temporal graphs from labelled 1-D recordings.
+
+        Graph nodes are time windows and the target node contains the event
+        onset. Mapping keys become split groups. Explicit validation entries
+        are ``(series, event_time)`` pairs.
+        """
+        from .temporal import TemporalGraphConfig, univariate_graph_episode
+
+        config = temporal_config or TemporalGraphConfig()
+        if isinstance(recordings, Mapping):
+            keys = list(recordings)
+            if not isinstance(event_times, Mapping):
+                raise ValueError("event_times must be a mapping when recordings is a mapping")
+            missing = [key for key in keys if key not in event_times]
+            if missing:
+                raise ValueError(f"event_times is missing recording {missing[0]!r}")
+            pairs = [(recordings[key], event_times[key]) for key in keys]
+            groups = [str(key) for key in keys]
+        else:
+            if isinstance(event_times, Mapping):
+                raise ValueError("event_times must be a sequence when recordings is a sequence")
+            values, times = list(recordings), list(event_times)
+            if len(values) != len(times):
+                raise ValueError("event_times must align with recordings")
+            pairs = list(zip(values, times))
+            groups = None
+        episodes = [univariate_graph_episode(values, time, config) for values, time in pairs]
+        held_out = (None if validation is None else
+                    [univariate_graph_episode(values, time, config)
+                     for values, time in validation])
+        return self.train(episodes, groups=groups, validation=held_out)
