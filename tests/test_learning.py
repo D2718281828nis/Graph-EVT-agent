@@ -179,6 +179,58 @@ def test_boolean_and_unit_weight_adjacency_give_identical_models():
     np.testing.assert_allclose(first.gnn_probabilities, second.gnn_probabilities)
 
 
+def _ramp_series(seed: int, onset: int, length: int = 700) -> np.ndarray:
+    """Oscillation + noise with an event that stays below noise for ~40 samples."""
+    rng = np.random.default_rng(seed)
+    time = np.arange(length)
+    values = np.sin(2 * np.pi * time / 97) + 0.3 * rng.normal(size=length)
+    duration = 100
+    taper = np.expm1(5 * np.linspace(0, 1, duration)) / np.expm1(5)
+    values[onset:onset + duration] += 3 * rng.normal(size=duration) * taper
+    return values
+
+
+def test_context_features_extend_schema_and_heuristic_ignores_them():
+    config = TemporalGraphConfig(window_size=32, stride=8, baseline_size=200, ar_order=4,
+                                 context=("ar", "wavelet", "dfa"), context_horizons=(32, 64))
+    graph = build_temporal_graph(_ramp_series(0, 400), config)
+    assert graph.features.shape[1] == len(config.feature_names) == 5 + 3 * 2 * 2
+    assert graph.feature_names[5:7] == ("ar_future_32", "ar_contrast_32")
+    assert np.isfinite(graph.features).all()
+    from graph_evt_agent.localization import heuristic_probabilities
+    np.testing.assert_allclose(heuristic_probabilities(graph.features),
+                               heuristic_probabilities(graph.features[:, :5]))
+
+
+def test_context_features_localize_a_slowly_growing_onset():
+    onsets = [300 + 13 * index for index in range(16)]
+    recordings = {f"rec{i}": _ramp_series(i, onset) for i, onset in enumerate(onsets)}
+    times = dict(zip(recordings, onsets))
+    errors = {}
+    for context in ((), ("ar",)):
+        temporal = TemporalGraphConfig(window_size=32, stride=8, baseline_size=200,
+                                       ar_order=4, context=context)
+        report = ProcessModelTrainer(
+            GraphLearningConfig(hidden_dim=16, epochs=150, random_state=0),
+            validation_fraction=0.25).train_1d(recordings, times, temporal_config=temporal)
+        found = []
+        for seed, onset in ((100, 330), (101, 410), (102, 470)):
+            graph = build_temporal_graph(_ramp_series(seed, onset), temporal)
+            node = report.model.predict(graph.features, graph.adjacency).gnn_source
+            found.append(abs(graph.window_starts[node] + 16 - onset))
+        errors[context] = np.median(found)
+    assert errors[("ar",)] <= 16 < errors[()]
+
+
+def test_context_config_validation():
+    with pytest.raises(ValueError, match="context"):
+        TemporalGraphConfig(context="ar")
+    with pytest.raises(ValueError, match="context"):
+        TemporalGraphConfig(context=("spectral",))
+    with pytest.raises(ValueError, match="context_horizons"):
+        TemporalGraphConfig(context=("ar",), context_horizons=(8,))
+
+
 def test_graph_process_model_round_trips_through_npz(tmp_path):
     rng = np.random.default_rng(0)
     adjacency = _chain(3)

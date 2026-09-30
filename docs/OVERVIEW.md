@@ -209,6 +209,46 @@ GAT adds `log(weight)` to its attention logits; boolean graphs behave exactly
 as before. As with the baseline graph method, choose `edge_method` and
 `prune` on training/validation recordings, never on the test set.
 
+#### Onset context features: finding where an event *starts*
+
+Edges (`edge_method`) say which windows *look alike*; they do not say where
+the signal changed. An onset is a change point, and a slowly growing event
+(e.g. an exponential taper) stays below the noise for tens of samples, so the
+onset window itself looks like background while the GNN's receptive field
+(two hops × `stride`) is too short to see the later growth. The five base
+features and the heuristic therefore pick the *peak*, not the *onset*.
+
+`context=(...)` appends, for each horizon `H` in `context_horizons`, the level
+of the next `H` samples and its contrast with the previous `H` samples,
+computed on innovations of an AR(`ar_order`) model fitted on the baseline
+only (so oscillations are whitened away):
+
+| `context` | Columns per horizon |
+|---|---|
+| `"ar"` | log innovation energy after the window start; after − before |
+| `"wavelet"` | Jensen–Shannon distance of the DWT level spectrum from the baseline; after − before |
+| `"dfa"` | DFA exponent minus the baseline exponent; after − before |
+
+```python
+temporal = TemporalGraphConfig(window_size=32, stride=8, baseline_size=300, ar_order=8,
+                               context=("ar", "wavelet", "dfa"),
+                               context_horizons=(32, 64, 128))
+temporal.feature_names   # 5 base + 18 context column names
+```
+
+With several horizons the model learns the (consistent) delay between the
+true onset and the first visible growth. On `generate_additive_fractal_series`
+recordings with randomised onsets (48 training / 40 test recordings), the
+predicted window centre was within ±16 samples of the onset for 100 % of test
+recordings with `context=("ar",)`, versus ≈ 25 % without context;
+`"wavelet"` alone reached ≈ 55 % and `"dfa"` alone gave no gain, because
+spectral shape and scaling change only once the event exceeds the noise.
+Context looks `max(context_horizons)` samples ahead: it is meant for
+retrospective labelling, and an online detector must wait that long. Train on
+recordings with **different** onset positions, otherwise the model can learn
+the position instead of the dynamics. The heuristic ranker ignores the extra
+columns.
+
 ### Orchestration and agents
 
 There are two orchestration layers:
