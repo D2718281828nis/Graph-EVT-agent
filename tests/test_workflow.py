@@ -6,7 +6,7 @@ import pytest
 from graph_evt_agent import (
     EpisodeLabeler, EvaluationCase, EvaluationOrchestrator, EVTConfig, GraphConfig,
     GraphEVTPipeline, GraphLearningConfig, LabelingConfig, ProcessModelTrainer, Progress,
-    TimeSeriesInput, ranking_metrics,
+    TemporalGraphConfig, TimeSeriesInput, build_temporal_graph, ranking_metrics,
 )
 from graph_evt_agent.evt import detect, find_events
 from graph_evt_agent.progress import _TextBar
@@ -141,6 +141,11 @@ def test_visualization_returns_figures():
         viz.plot_detection(result), viz.plot_attention(result.process),
         viz.plot_evaluation(evaluation),
     ]
+    series = recordings["rec0"].values[:, 0]
+    for temporal in (TemporalGraphConfig(baseline_size=200),
+                     TemporalGraphConfig(baseline_size=200, edge_method="wavelet", prune="knn")):
+        figures.append(viz.plot_temporal_graph(series, build_temporal_graph(series, temporal),
+                                               event_time=int(recordings["rec0"].event_times[0])))
     assert all(hasattr(figure, "savefig") for figure in figures)
     import matplotlib.pyplot as plt
     plt.close("all")

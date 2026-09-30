@@ -12,7 +12,11 @@ from .progress import Progress, ProgressCallback
 
 @dataclass(frozen=True)
 class GraphEpisode:
-    """One labelled event graph used to train source-node classifiers."""
+    """One labelled event graph used to train source-node classifiers.
+
+    ``adjacency`` is either a boolean edge mask or a symmetric non-negative
+    weight matrix (zero = no edge), e.g. a weighted temporal graph.
+    """
 
     features: np.ndarray
     adjacency: np.ndarray
@@ -35,15 +39,23 @@ class GraphLearningConfig:
 
 
 def _validate(features: np.ndarray, adjacency: np.ndarray, source: int | None = None):
+    """Return features and float edge weights with unit self-loops.
+
+    Boolean adjacency becomes 0/1 weights, so unweighted graphs behave as before.
+    """
     x = np.asarray(features, dtype=float)
-    a = np.asarray(adjacency, dtype=bool)
+    a = np.asarray(adjacency, dtype=float)
     if x.ndim != 2 or not np.isfinite(x).all():
         raise ValueError("features must be a finite [node, feature] array")
-    if a.shape != (len(x), len(x)) or not np.array_equal(a, a.T):
+    if a.shape != (len(x), len(x)) or not np.isfinite(a).all() or not np.allclose(a, a.T):
         raise ValueError("adjacency must be a symmetric [node, node] array")
+    if (a < 0).any():
+        raise ValueError("adjacency weights must be non-negative")
     if source is not None and not 0 <= source < len(x):
         raise ValueError("source must identify a node")
-    return x, np.logical_or(a, np.eye(len(a), dtype=bool))
+    weights = 0.5 * (a + a.T)
+    np.fill_diagonal(weights, np.maximum(np.diag(weights), 1.0))
+    return x, weights
 
 
 def _softmax(values: np.ndarray, axis: int = 0) -> np.ndarray:
@@ -53,15 +65,18 @@ def _softmax(values: np.ndarray, axis: int = 0) -> np.ndarray:
 
 
 def _normalized_adjacency(adjacency: np.ndarray) -> np.ndarray:
-    graph = np.logical_or(adjacency, np.eye(len(adjacency), dtype=bool)).astype(float)
+    """Row-normalized edge weights (a weighted mean over each neighborhood)."""
+    graph = np.asarray(adjacency, dtype=float).copy()
+    np.fill_diagonal(graph, np.maximum(np.diag(graph), 1.0))
     return graph / graph.sum(axis=1, keepdims=True)
 
 
 class GraphProcessModel:
     """Train compact nonlinear GNN and GAT node classifiers.
 
-    The GNN consumes zero-, one-, and two-hop node features. The GAT learns
-    episode-specific attention over accepted edges. Both models require source
+    The GNN consumes zero-, one-, and two-hop node features, aggregated with
+    the (optional) edge weights. The GAT learns episode-specific attention over
+    accepted edges, using the log edge weight as a prior. Both models require source
     labels; inference alone never fabricates training targets.
     """
 
@@ -121,7 +136,10 @@ class GraphProcessModel:
         target_score = x @ vectors[:, 1]
         raw = source_score[:, None] + target_score[None, :]
         activated = np.where(raw >= 0, raw, 0.2 * raw)
-        masked = np.where(adjacency, activated, -1e9)
+        # Edge weights act as a log-prior; unit (boolean) edges add nothing.
+        edges = adjacency > 0
+        prior = np.log(np.where(edges, adjacency, 1.0))
+        masked = np.where(edges, activated + prior, -1e9)
         return _softmax(masked, axis=1), raw
 
     def _logits(self, parameters: list[np.ndarray], x: np.ndarray,
@@ -219,7 +237,7 @@ class GraphProcessModel:
                 raw_delta = attention * (
                     attention_delta - (attention_delta * attention).sum(axis=1, keepdims=True)
                 )
-                raw_delta *= np.where(raw >= 0, 1.0, 0.2) * adjacency
+                raw_delta *= np.where(raw >= 0, 1.0, 0.2) * (adjacency > 0)
                 local.append(np.column_stack([
                     x.T @ raw_delta.sum(axis=1),
                     x.T @ raw_delta.sum(axis=0),

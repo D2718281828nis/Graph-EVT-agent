@@ -160,6 +160,55 @@ the returned `window_starts`. Keep the configured baseline prefix event-free
 and split independent recordings (not windows from one recording) across
 training and validation.
 
+#### Weighted, fully connected temporal graphs and pruning
+
+By default (`edge_method="neighborhood"`) each window is only linked to its
+nearest windows. Set `edge_method` to link **every pair of windows** with a
+similarity weight in `[0, 1]`:
+
+| `edge_method` | Edge weight between windows *i* and *j* |
+|---|---|
+| `"dfa"` | Cross-DFA: ½·mean \|detrended cross-correlation\| over `dfa_scales` + ½·exp(−\|α<sub>i</sub> − α<sub>j</sub>\|) of the per-window DFA exponents (default scales: powers of two from 4 to `window_size/2`, so `window_size ≥ 16`). |
+| `"wavelet"` | Periodized orthonormal DWT (`wavelet="haar" \| "db2" \| "db4"`, `wavelet_levels`): (1 − Jensen–Shannon distance of the relative level energies) × √(min/max total energy). |
+| `"ar"` | \|Pearson correlation\| of the windows' one-step innovations under one AR(`ar_order`) model fitted on the baseline prefix only. |
+
+The dense graph can then be sparsified with `prune`, keeping the weights of
+the retained edges:
+
+| `prune` | Kept edges |
+|---|---|
+| `"none"` | all (fully connected) |
+| `"threshold"` | weight ≥ `prune_threshold` |
+| `"knn"` | each node's `prune_k` strongest edges (symmetric union) |
+| `"mst"` | maximum spanning tree ∪ `prune_k` strongest per node — always connected |
+| `"disparity"` | disparity-filter backbone at significance `prune_alpha` (Serrano et al., 2009) |
+
+`prune_connected=True` adds the maximum spanning tree to any result so no
+window is isolated; use it with `"disparity"` or a high threshold, which on a
+near-uniform dense graph otherwise remove almost every edge.
+
+```python
+from graph_evt_agent import TemporalGraphConfig, build_temporal_graph
+from graph_evt_agent.visualization import plot_temporal_graph
+
+temporal = TemporalGraphConfig(window_size=16, stride=8, baseline_size=400,
+                               edge_method="wavelet", prune="mst", prune_k=2)
+graph = build_temporal_graph(signal, temporal)
+graph.full_weights   # dense [node, node] weights before pruning
+graph.adjacency      # pruned weights (0 = no edge, unit diagonal)
+graph.density        # fraction of window pairs still linked
+plot_temporal_graph(signal, graph, event_time=710)
+report = ProcessModelTrainer().train_1d(recordings, onsets, temporal_config=temporal)
+```
+
+The five node features keep their schema (`TEMPORAL_FEATURE_NAMES`), but on a
+weighted graph `degree` is the node strength (sum of edge weights) and
+`neighbor` is the weight-averaged peak. `GraphProcessModel` accepts weighted
+adjacency everywhere: the GNN aggregates with row-normalized weights and the
+GAT adds `log(weight)` to its attention logits; boolean graphs behave exactly
+as before. As with the baseline graph method, choose `edge_method` and
+`prune` on training/validation recordings, never on the test set.
+
 ### Orchestration and agents
 
 There are two orchestration layers:

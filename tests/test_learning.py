@@ -1,8 +1,11 @@
 import numpy as np
 
+import pytest
+
 from graph_evt_agent import (
     GraphEpisode, GraphLearningConfig, GraphProcessModel, ProcessModelTrainer,
-    TemporalGraphConfig, univariate_graph_episode, univariate_temporal_graph,
+    TemporalGraphConfig, build_temporal_graph, prune_weighted_graph,
+    univariate_graph_episode, univariate_temporal_graph,
 )
 
 
@@ -76,6 +79,104 @@ def test_univariate_temporal_graph_rejects_invalid_inputs():
         univariate_temporal_graph([1, np.nan, 2, 3, 4], config)
     with np.testing.assert_raises_regex(ValueError, "event_time"):
         univariate_graph_episode(np.arange(10.0), 10, config)
+
+
+def _spike_series(seed: int = 0, onset: int = 125) -> np.ndarray:
+    values = np.random.default_rng(seed).normal(0, 0.15, 240)
+    values[onset:onset + 8] += 4
+    return values
+
+
+@pytest.mark.parametrize("edge_method", ["dfa", "wavelet", "ar"])
+def test_weighted_temporal_graph_is_fully_connected_before_pruning(edge_method):
+    config = TemporalGraphConfig(baseline_size=80, edge_method=edge_method)
+    graph = build_temporal_graph(_spike_series(), config)
+    nodes = len(graph.window_starts)
+    assert graph.adjacency.dtype == float
+    assert graph.full_weights.shape == (nodes, nodes)
+    np.testing.assert_allclose(graph.adjacency, graph.adjacency.T)
+    np.testing.assert_allclose(np.diag(graph.adjacency), 1)
+    assert np.all((graph.full_weights >= 0) & (graph.full_weights <= 1))
+    assert graph.edge_mask.all() and graph.density == 1
+    # Weighted degree is the node strength.
+    np.testing.assert_allclose(graph.features[:, 3], graph.adjacency.sum(axis=1) - 1)
+
+
+def test_wavelet_weights_separate_event_windows_from_background():
+    graph = build_temporal_graph(_spike_series(), TemporalGraphConfig(
+        baseline_size=80, edge_method="wavelet"))
+    event = int(np.argmax(graph.features[:, 0]))
+    background = [node for node in range(len(graph.window_starts)) if abs(node - event) > 2]
+    to_event = graph.full_weights[event, background].mean()
+    within = graph.full_weights[np.ix_(background, background)]
+    assert to_event < 0.5 * within[~np.eye(len(background), dtype=bool)].mean()
+
+
+@pytest.mark.parametrize("prune", ["threshold", "knn", "mst", "disparity"])
+def test_pruning_sparsifies_and_keeps_weights(prune):
+    config = TemporalGraphConfig(baseline_size=80, edge_method="wavelet", prune=prune,
+                                 prune_k=2, prune_threshold=0.6)
+    graph = build_temporal_graph(_spike_series(), config)
+    kept = np.triu(graph.edge_mask, 1)
+    assert graph.density < 1
+    np.testing.assert_allclose(graph.adjacency[kept],
+                               np.maximum(graph.full_weights[kept], 1e-6))
+    np.testing.assert_allclose(graph.adjacency, graph.adjacency.T)
+
+
+def test_pruning_rules():
+    weights = np.array([[1.0, 0.9, 0.1, 0.2],
+                        [0.9, 1.0, 0.8, 0.1],
+                        [0.1, 0.8, 1.0, 0.3],
+                        [0.2, 0.1, 0.3, 1.0]])
+    threshold = prune_weighted_graph(weights, "threshold", threshold=0.5) > 0
+    assert threshold[0, 1] and threshold[1, 2] and not threshold[2, 3]
+    knn = prune_weighted_graph(weights, "knn", k=1) > 0
+    assert knn[0, 1] and knn[1, 0] and knn[2, 1] and knn[3, 2] and not knn[0, 3]
+    tree = prune_weighted_graph(weights, "mst", k=0) > 0
+    assert np.triu(tree, 1).sum() == 3  # spanning tree on 4 nodes
+    assert tree[0, 1] and tree[1, 2] and tree[2, 3]
+    isolated = prune_weighted_graph(weights, "threshold", threshold=0.95, connected=True) > 0
+    assert (isolated.sum(axis=1) > 1).all()
+    with pytest.raises(ValueError, match="symmetric"):
+        prune_weighted_graph(np.triu(weights), "knn")
+
+
+def test_temporal_graph_config_validation():
+    with pytest.raises(ValueError, match="pruning applies only"):
+        TemporalGraphConfig(prune="knn")
+    with pytest.raises(ValueError, match="edge_method"):
+        TemporalGraphConfig(edge_method="spectral")
+    with pytest.raises(ValueError, match="DFA edges"):
+        TemporalGraphConfig(window_size=8, edge_method="dfa").resolved_dfa_scales()
+    assert TemporalGraphConfig(window_size=32).resolved_dfa_scales() == (4, 8, 16)
+
+
+def test_weighted_temporal_graph_trains_gnn_and_gat():
+    recordings = {f"rec{i}": _spike_series(i, 110 + 5 * i) for i in range(6)}
+    onsets = {f"rec{i}": 110 + 5 * i for i in range(6)}
+    temporal = TemporalGraphConfig(baseline_size=80, edge_method="ar", prune="mst")
+    report = ProcessModelTrainer(
+        GraphLearningConfig(epochs=20, learning_rate=0.03, random_state=3),
+        validation_fraction=0.34,
+    ).train_1d(recordings, onsets, temporal_config=temporal)
+    features, adjacency, _ = univariate_temporal_graph(recordings["rec0"], temporal)
+    prediction = report.model.predict(features, adjacency)
+    assert np.isclose(prediction.gat_probabilities.sum(), 1)
+    assert np.all(prediction.attention[adjacency == 0] == 0)
+
+
+def test_boolean_and_unit_weight_adjacency_give_identical_models():
+    rng = np.random.default_rng(4)
+    adjacency = _chain(4)
+    episodes = [GraphEpisode(rng.normal(size=(4, 5)), adjacency, index % 4) for index in range(8)]
+    weighted = [GraphEpisode(e.features, e.adjacency.astype(float), e.source) for e in episodes]
+    config = GraphLearningConfig(epochs=10, random_state=1)
+    first = GraphProcessModel(config).fit(episodes).predict(episodes[0].features, adjacency)
+    second = GraphProcessModel(config).fit(weighted).predict(episodes[0].features,
+                                                             adjacency.astype(float))
+    np.testing.assert_allclose(first.gat_probabilities, second.gat_probabilities)
+    np.testing.assert_allclose(first.gnn_probabilities, second.gnn_probabilities)
 
 
 def test_graph_process_model_round_trips_through_npz(tmp_path):
