@@ -273,3 +273,60 @@ def plot_evaluation(report: Any) -> Any:
     ax.legend(frameon=False, loc="upper left")
     _style(ax)
     return fig
+
+
+def plot_temporal_graph(values: np.ndarray, graph: Any, event_time: int | None = None) -> Any:
+    """Signal windows, kept-edge arc diagram, dense vs. pruned weights, features.
+
+    ``graph`` is a :class:`~graph_evt_agent.temporal.TemporalGraph`. Arc
+    opacity and width follow edge weight; the event onset is marked in red.
+    """
+    plt = _pyplot()
+    data = np.asarray(values, dtype=float).reshape(-1)
+    starts = np.asarray(graph.window_starts)
+    width = getattr(graph, "window_size", None) or (
+        int(starts[1] - starts[0]) if len(starts) > 1 else len(data))
+    centres = np.minimum(starts + width / 2, len(data) - 1)
+    weights = np.asarray(graph.adjacency, dtype=float)
+    fig, axes = plt.subplot_mosaic([["signal"] * 3, ["arcs"] * 3, ["dense", "kept", "features"]],
+                                   figsize=(13, 10), constrained_layout=True,
+                                   gridspec_kw={"height_ratios": [1, 1.2, 1.6]})
+    ax = axes["signal"]
+    ax.plot(np.arange(len(data)), data, color=MUTED, linewidth=1)
+    ax.plot(centres, np.full(len(centres), data.min()), "|", color=NEUTRAL, markersize=8)
+    ax.set(title="Signal and window centres (graph nodes)", xlabel="sample")
+    ax = axes["arcs"]
+    rows, cols = np.nonzero(np.triu(weights > 0, 1))
+    top = max(float(np.ptp(centres)), 1.0)
+    for i, j in zip(rows, cols):
+        span = abs(centres[j] - centres[i])
+        angle = np.linspace(0, np.pi, 40)
+        ax.plot((centres[i] + centres[j]) / 2 + span / 2 * np.cos(angle),
+                span / 2 * np.sin(angle), color=COLORS["gnn"],
+                alpha=0.15 + 0.7 * weights[i, j], linewidth=0.4 + 1.6 * weights[i, j])
+    strength = weights.sum(axis=1) - 1
+    ax.scatter(centres, np.zeros(len(centres)), s=16 + 48 * strength / max(strength.max(), 1e-12),
+               color=MUTED, zorder=3)
+    ax.set(ylim=(-0.03 * top, 0.55 * top), yticks=[], xlabel="window centre (sample)",
+           title=f"Kept edges – {graph.method}, density {graph.density:.2f}")
+    for name in ("signal", "arcs"):
+        if event_time is not None:
+            axes[name].axvline(event_time, color=ALARM, linewidth=1.2, label="event onset")
+        axes[name].set_xlim(0, len(data) - 1)
+        _style(axes[name])
+    if event_time is not None:
+        axes["signal"].legend(frameon=False, loc="upper left")
+    dense = graph.full_weights if graph.full_weights is not None else weights
+    for name, matrix, title in (("dense", dense, "Dense edge weights"),
+                                ("kept", weights, "Kept edge weights")):
+        image = axes[name].imshow(matrix, cmap="Blues", vmin=0, vmax=1)
+        axes[name].set(title=title, xlabel="node j", ylabel="node i")
+    fig.colorbar(image, ax=[axes["dense"], axes["kept"]], shrink=0.8, label="weight")
+    features = np.asarray(graph.features, dtype=float)
+    span = np.ptp(features, axis=0)
+    scaled = (features - features.min(axis=0)) / np.where(span > 0, span, 1)
+    axes["features"].imshow(scaled.T, cmap="Blues", vmin=0, vmax=1, aspect="auto")
+    names = list(getattr(graph, "feature_names", range(features.shape[1])))
+    axes["features"].set_yticks(range(len(names)), names)
+    axes["features"].set(title="Node features (min–max per row)", xlabel="node")
+    return fig
