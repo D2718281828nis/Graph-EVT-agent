@@ -26,12 +26,13 @@ import numpy as np
 from scipy.sparse.csgraph import minimum_spanning_tree
 
 from .config import GraphConfig
-from .graph import dfa_graph
+from .graph import _detrended_segments, dfa_graph
 from .learning import GraphEpisode
 
 EDGE_METHODS = ("neighborhood", "dfa", "wavelet", "ar")
 PRUNE_METHODS = ("none", "threshold", "knn", "mst", "disparity")
 TEMPORAL_FEATURE_NAMES = ("peak", "energy", "latency", "degree", "neighbor")
+CONTEXT_METHODS = ("ar", "wavelet", "dfa")
 
 # Orthonormal Daubechies low-pass (scaling) filters; high-pass filters follow
 # from the quadrature-mirror relation in :func:`_dwt_energies`.
@@ -65,6 +66,24 @@ class TemporalGraphConfig:
 
     ``prune_connected=True`` adds the maximum spanning tree to any pruning
     result so no window becomes isolated.
+
+    Onset context features (``context``): an event onset is a *change point*,
+    so a window is described not only by its own samples but by how the
+    signal after its start differs from the signal before it. For every
+    horizon ``H`` in ``context_horizons`` (samples) and every method in
+    ``context`` two columns are appended – the level of ``[start, start + H)``
+    relative to the baseline, and its contrast with ``[start - H, start)``:
+
+    * ``"ar"`` – log energy of the baseline-AR(``ar_order``) innovations;
+    * ``"wavelet"`` – Jensen–Shannon distance of the innovations' DWT level
+      spectrum from the baseline spectrum (colour/scale change);
+    * ``"dfa"`` – DFA exponent of the innovation profile minus the baseline
+      exponent (change of long-range correlation).
+
+    The context looks ``max(context_horizons)`` samples ahead, so it suits
+    retrospective labelling; online use delays the decision by that amount.
+    Use an ``ar_order`` large enough to whiten the background (e.g. 8 for a
+    sum of several oscillations).
     """
 
     window_size: int = 16
@@ -81,6 +100,8 @@ class TemporalGraphConfig:
     prune_k: int = 3
     prune_alpha: float = 0.05
     prune_connected: bool = False
+    context: tuple[str, ...] = ()
+    context_horizons: tuple[int, ...] = (32, 64, 128)
 
     def __post_init__(self) -> None:
         if min(self.window_size, self.stride, self.neighborhood, self.baseline_size) < 1:
@@ -103,6 +124,20 @@ class TemporalGraphConfig:
             raise ValueError("prune_k must be non-negative (positive for knn)")
         if not 0 < self.prune_alpha < 1:
             raise ValueError("prune_alpha must be in (0, 1)")
+        if isinstance(self.context, str) or any(m not in CONTEXT_METHODS for m in self.context):
+            raise ValueError(f"context must be a tuple drawn from {CONTEXT_METHODS}")
+        if self.context and (not self.context_horizons
+                             or any(h < 16 for h in self.context_horizons)):
+            raise ValueError("context_horizons must be non-empty and each >= 16 samples")
+
+    @property
+    def feature_names(self) -> tuple[str, ...]:
+        """Column names of the node features produced with this config."""
+        names = list(TEMPORAL_FEATURE_NAMES)
+        for method in self.context:
+            for horizon in self.context_horizons:
+                names += [f"{method}_future_{horizon}", f"{method}_contrast_{horizon}"]
+        return tuple(names)
 
     def resolved_dfa_scales(self) -> tuple[int, ...]:
         """DFA scales used for this window size (validated)."""
@@ -133,6 +168,7 @@ class TemporalGraph:
     full_weights: np.ndarray | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
     window_size: int | None = None
+    feature_names: tuple[str, ...] = TEMPORAL_FEATURE_NAMES
 
     @property
     def edge_mask(self) -> np.ndarray:
@@ -146,10 +182,6 @@ class TemporalGraph:
         if nodes < 2:
             return 0.0
         return float(np.triu(self.edge_mask, 1).sum() / (nodes * (nodes - 1) / 2))
-
-    @property
-    def feature_names(self) -> tuple[str, ...]:
-        return TEMPORAL_FEATURE_NAMES
 
 
 def _node_segments(data: np.ndarray, starts: np.ndarray, window: int) -> np.ndarray:
@@ -238,6 +270,76 @@ def _ar_weights(data: np.ndarray, starts: np.ndarray, config: TemporalGraphConfi
                                     "ar_coefficients": coefficients}
 
 
+def _dfa_exponent(segment: np.ndarray) -> float:
+    """DFA-1 exponent of one segment (scales: powers of two up to len / 4)."""
+    scales = [2 ** power for power in range(2, 16) if 2 ** (power + 2) <= len(segment)]
+    if len(scales) < 2:
+        return float("nan")
+    profile = np.cumsum(segment - segment.mean())
+    fluctuation = [np.sqrt(np.mean(_detrended_segments(profile, scale) ** 2)) for scale in scales]
+    return float(np.polyfit(np.log(scales), np.log(np.maximum(fluctuation, 1e-12)), 1)[0])
+
+
+def _wavelet_spectrum(segment: np.ndarray, wavelet: str) -> np.ndarray:
+    energies, _ = _dwt_energies(segment[:, None], wavelet, None)
+    energies = np.maximum(energies[0], 1e-12)
+    return energies / energies.sum()
+
+
+def _js_distance(p: np.ndarray, q: np.ndarray) -> float:
+    size = min(len(p), len(q))
+    # Fold extra coarse levels into the approximation so both spectra align.
+    p = np.append(p[:size - 1], p[size - 1:].sum())
+    q = np.append(q[:size - 1], q[size - 1:].sum())
+    mixture = 0.5 * (p + q)
+    divergence = 0.5 * (np.sum(p * np.log2(p / mixture)) + np.sum(q * np.log2(q / mixture)))
+    return float(np.sqrt(np.clip(divergence, 0, 1)))
+
+
+def _context_features(data: np.ndarray, starts: np.ndarray, config: TemporalGraphConfig):
+    """Future level and future-vs-past contrast of baseline-AR innovations."""
+    innovations, _ = _ar_innovations(data, config.baseline_size, config.ar_order)
+    reference = innovations[config.ar_order:config.baseline_size]
+    white = innovations / max(float(reference.std()), 1e-12)
+    white[:config.ar_order] = 0.0
+    cumulative = np.concatenate([[0.0], np.cumsum(white ** 2)])
+    columns = []
+    for method in config.context:
+        baseline_value = None
+        if method == "wavelet":
+            baseline_value = _wavelet_spectrum(white[config.ar_order:config.baseline_size],
+                                               config.wavelet)
+        elif method == "dfa":
+            baseline_value = _dfa_exponent(white[config.ar_order:config.baseline_size])
+        for horizon in config.context_horizons:
+            future, contrast = [], []
+            for start in starts:
+                after = (start, min(start + horizon, len(data)))
+                before = (max(start - horizon, 0), start)
+                if method == "ar":
+                    level = [np.log((cumulative[b] - cumulative[a]) / (b - a) + 1e-3)
+                             if b > a else 0.0 for a, b in (after, before)]
+                    future.append(level[0])
+                    contrast.append(level[0] - level[1] if before[1] > before[0] else level[0])
+                    continue
+                values = []
+                for a, b in (after, before):
+                    segment = white[a:b]
+                    if b - a < 16:
+                        values.append(np.nan)
+                    elif method == "wavelet":
+                        values.append(_js_distance(_wavelet_spectrum(segment, config.wavelet),
+                                                   baseline_value))
+                    else:
+                        values.append(_dfa_exponent(segment) - baseline_value)
+                after_value = 0.0 if np.isnan(values[0]) else values[0]
+                before_value = 0.0 if np.isnan(values[1]) else values[1]
+                future.append(after_value)
+                contrast.append(after_value - before_value)
+            columns += [future, contrast]
+    return np.nan_to_num(np.asarray(columns, dtype=float).T)
+
+
 def _maximum_spanning_tree(weights: np.ndarray) -> np.ndarray:
     cost = (weights.max() + 1.0) - weights
     np.fill_diagonal(cost, 0.0)
@@ -308,10 +410,12 @@ def build_temporal_graph(values: np.ndarray,
                          config: TemporalGraphConfig | None = None) -> TemporalGraph:
     """Build window nodes, features and edges for a 1-D recording.
 
-    Features follow the transparent ranker's five-column schema: robust peak,
-    energy, within-window latency, graph degree, and neighboring peak. On a
-    weighted graph ``degree`` is the node strength (sum of edge weights) and
+    The first five features follow the transparent ranker's schema: robust
+    peak, energy, within-window latency, graph degree, and neighboring peak. On
+    a weighted graph ``degree`` is the node strength (sum of edge weights) and
     ``neighbor`` the weight-averaged peak over the node and its neighbors.
+    ``config.context`` appends onset context columns (see
+    :class:`TemporalGraphConfig`); ``TemporalGraph.feature_names`` lists them.
     """
     config = config or TemporalGraphConfig()
     data = np.asarray(values, dtype=float)
@@ -363,10 +467,12 @@ def build_temporal_graph(values: np.ndarray,
     degree = weights.sum(axis=1) - 1
     neighbor = weights @ peak_array / weights.sum(axis=1)
     features = np.column_stack([peak_array, energy, latency, degree, neighbor])
+    if config.context:
+        features = np.column_stack([features, _context_features(data, starts, config)])
     method = config.edge_method if config.edge_method == "neighborhood" else (
         f"{config.edge_method}+{config.prune}")
     return TemporalGraph(features, adjacency, starts, method, full_weights, diagnostics,
-                         config.window_size)
+                         config.window_size, config.feature_names)
 
 
 def univariate_temporal_graph(values: np.ndarray,

@@ -6,8 +6,11 @@ from .models import SourceRanking
 
 
 def heuristic_probabilities(features: np.ndarray) -> np.ndarray:
-    """Softmax of the fixed score over ``[peak, energy, latency, degree, neighbor]``."""
-    peak, energy, latency, _, neighbor = np.asarray(features, dtype=float).T
+    """Softmax of the fixed score over ``[peak, energy, latency, degree, neighbor]``.
+
+    Extra columns (e.g. temporal onset context features) are ignored.
+    """
+    peak, energy, latency, _, neighbor = np.asarray(features, dtype=float)[:, :5].T
     raw = peak + np.sqrt(energy) + 0.15 * neighbor - 0.5 * latency
     raw -= raw.max()
     return np.exp(raw) / np.exp(raw).sum()
