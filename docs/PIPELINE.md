@@ -32,8 +32,9 @@ labelling, training and evaluation workflow around it is walked through in
 The default graph method is `auto`. It uses an AR-innovation graph when a
 simple four-block location/variance heuristic calls the baseline approximately
 stationary. Otherwise it uses the intersection of DFA and Kuramoto edges.
-For a scientific experiment, choose and freeze `ar`, `dfa`, `kuramoto`, or
-`ensemble` on training/validation data instead of selecting from test results.
+For a scientific experiment, choose and freeze `ar`, `dfa`, `kuramoto`,
+`ensemble`, `corr`, `partial`, `xcorr`, `pwxcorr` or `granger` (with its edge rule
+and parameters) on training/validation data instead of selecting from test results.
 
 ## What the graph represents
 

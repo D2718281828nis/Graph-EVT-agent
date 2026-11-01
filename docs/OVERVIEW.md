@@ -99,6 +99,40 @@ Edges are association hypotheses, not causal links.
   calls the baseline stationary, otherwise ensemble. For experiments, fix the
   method on training data instead.
 
+Opt-in dependence measures (the defaults above are unchanged):
+
+- **Correlation (`method="corr"`)** – |corr| of the channels at lag 0.
+- **Partial correlation (`method="partial"`)** – |partial corr| from the inverse
+  correlation matrix; removes what the other channels explain at lag 0, so a
+  chain `a – b – c` does not produce an `a – c` edge.
+- **Lagged cross-correlation (`method="xcorr"`)** – best corr(x_i(t), x_j(t + lag))
+  over |lag| ≤ `max_lag`; for delayed propagation. The lag of every pair is in
+  `graph.diagnostics["lag"]`.
+- **Prewhitened (`method="pwxcorr"`)** – the same on AR(`ar_order`) innovations
+  (Box–Jenkins prewhitening): sharper peaks for smooth, autocorrelated channels.
+- **Conditional Granger (`method="granger"`)** – for each target channel, a ridge
+  regression (`ridge`) on lags `lag_step, 2·lag_step, …, max_lag` of all channels;
+  the strength of `i → m` is ln(RSS without `i` / RSS with all). A two-step path
+  `i → j → m` is explained by `j`, so only direct links stay strong. The graph uses
+  max(G[i, m], G[m, i]); the directed strengths are in
+  `graph.diagnostics["directed_strength"]`. Predictive, not causal.
+
+Edge rules and checks for these methods:
+
+- `edge_rule="threshold"` (default, dependence ≥ `edge_threshold`) or
+  `edge_rule="topk"` (the `top_k_edges` strongest partners of every node, union);
+  `topk` also works for `ar` and `dfa`.
+- `prune_indirect=True` (`xcorr`, `pwxcorr`) removes `i – j` when a node `k` gives
+  stronger `i – k` and `k – j` links with |lag_ik| + |lag_kj| within
+  `lag_tolerance` of |lag_ij|.
+- `surrogate_test=True` (`corr`, `xcorr`, `pwxcorr`) keeps an edge only above the
+  `surrogate_quantile` of `surrogate_count` independent circular channel shifts.
+
+On a delayed 5-node network (`tests/test_graph_methods.py`) conditional Granger
+recovers the edges exactly, lagged correlation adds indirect pairs, and lag-0
+measures miss the delayed links; partial correlation recovers a Gaussian chain
+that plain correlation over-connects.
+
 You can call the builders directly without detection:
 
 ```python
@@ -107,6 +141,10 @@ from graph_evt_agent.graph import build_graph, dfa_graph, kuramoto_wavelet_graph
 
 g = build_graph(baseline_array, GraphConfig(method="kuramoto", wavelet_periods=(8.0, 16.0)))
 print(g.method, g.adjacency.astype(int), g.diagnostics["order_parameter_mean"])
+
+g = build_graph(baseline_array, GraphConfig(method="granger", max_lag=40, lag_step=5,
+                                            edge_rule="topk", top_k_edges=2))
+print(g.method, g.adjacency.astype(int), g.diagnostics["directed_strength"].round(3))
 ```
 
 ### Source ranking ("which node first?")
