@@ -4,10 +4,12 @@ Numerical results are produced by :class:`GraphEVTPipeline`; the LLM never
 silently changes thresholds, edges, or rankings.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from importlib import import_module
 import json
+import math
 import os
+import re
 import time
 from typing import Any, Protocol
 
@@ -26,7 +28,10 @@ class MistralAPIError(RuntimeError):
 
 def _new_mistral_client(api_key: str, server_url: str | None) -> Any:
     """Load the network client only when an LLM client is requested."""
-    mistral = import_module("mistralai")
+    try:
+        mistral = import_module("mistralai")
+    except ImportError:
+        raise ImportError("MistralClient needs the optional dependency: pip install 'graph-evt-agent[llm]'") from None
     if server_url is None:
         return mistral.Mistral(api_key=api_key)
     return mistral.Mistral(api_key=api_key, server_url=server_url)
@@ -100,14 +105,85 @@ class MistralClient:
         return content
 
 
+_NUMBER = re.compile(r"(?<![\w.])[-−]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?")
+
+
+def _numbers(text: str) -> list[tuple[str, float, int]]:
+    """Numbers of a text as (spelling, value, decimals); "13,3" and "13.3" are the same number."""
+    out = []
+    for raw in _NUMBER.findall(text):
+        s = raw.replace("−", "-").replace(",", ".")
+        mant = s.split("e")[0].split("E")[0]
+        out.append((raw, float(s), len(mant.split(".")[1]) if "." in mant else 0))
+    return out
+
+
+def _evidence_values(obj: Any) -> list[float]:
+    if isinstance(obj, bool) or obj is None:
+        return []
+    if isinstance(obj, (int, float)):
+        return [float(obj)] if math.isfinite(obj) else []
+    if isinstance(obj, str):
+        return [v for _, v, _ in _numbers(obj)]
+    if isinstance(obj, dict):
+        return [v for x in obj.values() for v in _evidence_values(x)]
+    if isinstance(obj, (list, tuple)):
+        return [v for x in obj for v in _evidence_values(x)]
+    return []
+
+
+def verify_numbers(text: str, evidence: Any, rel_tol: float = 1e-9, skip_small_int: int = 10) -> list[str]:
+    """Numbers of ``text`` that are not values of ``evidence`` (eq:fidelity).
+
+    A number with d decimals is verified when some evidence value e satisfies |a − e| <= 0.5·10^-d (a is e rounded
+    to the precision written in the text), also for percentages (a = 100·e). Integers below ``skip_small_int`` are
+    not checked (list numbering, "top-3"). Returns the unverified spellings in order of appearance.
+    """
+    known = _evidence_values(evidence)
+    bad = []
+    for raw, a, d in _numbers(text):
+        if d == 0 and abs(a) < skip_small_int and float(a).is_integer():
+            continue
+        tol = 0.5 * 10.0 ** -d + rel_tol * abs(a)
+        if not any(abs(a - e) <= tol or abs(a - 100 * e) <= tol for e in known):
+            bad.append(raw)
+    return bad
+
+
+_VERDICT = re.compile(r"\{[^{}]*\"event_detected\"[^{}]*\}", re.S)
+
+
+def parse_verdict(text: str) -> dict[str, Any] | None:
+    """The coordinator's structured verdict: the last JSON object with "event_detected" (and optionally "source")."""
+    found = _VERDICT.findall(text)
+    if not found:
+        return None
+    try:
+        verdict = json.loads(found[-1])
+    except json.JSONDecodeError:
+        return None
+    return verdict if isinstance(verdict.get("event_detected"), bool) else None
+
+
 @dataclass(frozen=True)
 class AgentReport:
+    """Agent texts next to the unchanged numerical result.
+
+    ``pipeline_verdict`` is the verdict of the numerical pipeline, ``agent_verdict`` — the coordinator's structured
+    verdict (None if it gave none), ``disagreement`` — which fields differ (eq:disagree); the pipeline result is never
+    replaced. ``unverified_numbers`` lists, per text, numbers that are not in the evidence JSON (eq:fidelity).
+    """
     input_review: str
     detection_review: str
     graph_review: str
     localization_review: str
     final_report: str
     result: dict[str, Any]
+    pipeline_verdict: dict[str, Any] = field(default_factory=dict)
+    agent_verdict: dict[str, Any] | None = None
+    disagreement: dict[str, bool] | None = None
+    unverified_numbers: dict[str, list[str]] = field(default_factory=dict)
+    final_report_rewritten: bool = False
 
 
 class EVTAgentTeam:
@@ -212,9 +288,30 @@ class EVTAgentTeam:
              "localization": localization_review},
             ensure_ascii=False,
         )
+        coordinator = (f"Ты координатор команды. {guard} В последней строке дай вердикт одним JSON-объектом: "
+                       '{"event_detected": true|false, "source": "<узел или null>"}.')
         final_report = self.client.complete(
-            f"Ты координатор команды. {guard}",
+            coordinator,
             f"Составь краткий итог для пользователя. Численные данные: {evidence}\nОтзывы: {reviews}",
         )
+        rewritten = False
+        bad = verify_numbers(final_report, evidence_payload)
+        if bad:                                       # одна переписка; оставшиеся расхождения помечаются
+            final_report = self.client.complete(
+                coordinator,
+                f"В итоге есть числа, которых нет в численных данных: {', '.join(bad)}. Перепиши итог, используя только "
+                f"числа из JSON.\nЧисленные данные: {evidence}\nПрежний итог: {final_report}",
+            )
+            rewritten = True
+        texts = {"input": input_review, "detection": detection_review, "graph": graph_review,
+                 "localization": localization_review, "final": final_report}
+        unverified = {k: v for k, v in ((k, verify_numbers(x, evidence_payload)) for k, x in texts.items()) if v}
+        ranking = evidence_payload.get("ranking")
+        pipeline_verdict = {"event_detected": bool(run.detection.detected),
+                            "source": ranking["node_ids"][0] if ranking else None}
+        agent_verdict = parse_verdict(final_report)
+        disagreement = None if agent_verdict is None else {
+            k: agent_verdict.get(k) != pipeline_verdict[k] for k in pipeline_verdict if k in agent_verdict}
         return AgentReport(input_review, detection_review, graph_review,
-                           localization_review, final_report, result)
+                           localization_review, final_report, result, pipeline_verdict, agent_verdict,
+                           disagreement, unverified, rewritten)

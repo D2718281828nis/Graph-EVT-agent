@@ -357,7 +357,17 @@ print(report.detection_review)     # агент EVT
 print(report.graph_review)         # агент графа
 print(report.localization_review)  # агент локализации
 print(report.final_report)         # агент-координатор
+print(report.unverified_numbers)   # числа текстов, которых нет в JSON-сводке (после одной переписки итога)
+print(report.pipeline_verdict, report.agent_verdict, report.disagreement)  # вердикт конвейера, агентов, расхождение
 ```
+
+Числа агентов проверяются по JSON-сводке (`verify_numbers`): число текста принято, если оно — значение сводки,
+округлённое до написанной точности (или процент от него); целые меньше 10 не проверяются. Если в итоге координатора
+есть непроверенные числа, он один раз переписывает итог; оставшиеся расхождения — в `unverified_numbers`. Координатор
+заканчивает итог JSON-вердиктом `{"event_detected": …, "source": …}`; он хранится рядом с вердиктом конвейера, а
+`disagreement` показывает, в чём они расходятся. Численный результат (`report.result`) агенты не меняют.
+
+Клиент Mistral — необязательная зависимость: `python -m pip install -e '.[llm]'` (в `[dev]` она уже есть).
 
 ### Ошибка HTTP 401/403
 
